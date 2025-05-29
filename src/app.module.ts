@@ -15,7 +15,7 @@ import { TypeOrmModule } from '@nestjs/typeorm';
       password: 'senha123',
       database: 'meubanco',
       autoLoadEntities: true,
-      synchronize: true, // cuidado: usar só em dev!
+      synchronize: true,
     }),
   ],
   controllers: [AppController],

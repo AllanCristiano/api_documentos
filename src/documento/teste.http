@@ -22,12 +22,12 @@ PUT http://localhost:3000/documento/1
 Content-Type: application/json
 
 {
-  "type": "DECREE",
+  "type": "DECRETO",
   "number": "5678",
   "title": "Alteração de Decreto",
   "description": "Nova descrição",
   "date": "2025-05-29",
-  "url": "https://exemplo.com/documento_atualizado.pdf"
+  "url": ""
 }
 
 ### Deletar Documento (DELETE)
