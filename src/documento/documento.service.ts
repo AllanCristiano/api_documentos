@@ -1,12 +1,14 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, NotFoundException } from '@nestjs/common';
 import { CreateDocumentoDto } from './dto/create-documento.dto';
-import { UpdateDocumentoDto } from './dto/update-documento.dto';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Documento } from './entities/documento.entity';
 import { Repository } from 'typeorm';
+import { join } from 'path';
+import { createReadStream, statSync } from 'fs';
 
 @Injectable()
 export class DocumentoService {
+  private readonly pdfDirectory = join(process.cwd(), 'pdfs');
   constructor(
     @InjectRepository(Documento)
     private readonly documentoRepository: Repository<Documento>,
@@ -30,15 +32,18 @@ export class DocumentoService {
     return documento;
   }
 
-  async update(
-    id: number,
-    updateDocumentoDto: UpdateDocumentoDto,
-  ): Promise<Documento> {
-    await this.documentoRepository.update(id, updateDocumentoDto);
-    return this.findOne(id);
-  }
+  getPdfStream(filename: string) {
+    const filePath = join(this.pdfDirectory, filename);
 
-  async remove(id: number): Promise<void> {
-    await this.documentoRepository.delete(id);
+    // Lança exceção se não existir
+    try {
+      statSync(filePath);
+    } catch {
+      throw new NotFoundException('Arquivo não encontrado');
+    }
+
+    const stream = createReadStream(filePath);
+    const stat = statSync(filePath);
+    return { stream, stat };
   }
 }

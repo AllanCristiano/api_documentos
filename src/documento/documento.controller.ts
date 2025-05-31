@@ -3,13 +3,14 @@ import {
   Get,
   Post,
   Body,
-  Patch,
   Param,
-  Delete,
+  Res,
+  StreamableFile,
+  NotFoundException,
 } from '@nestjs/common';
+import { Response } from 'express';
 import { DocumentoService } from './documento.service';
 import { CreateDocumentoDto } from './dto/create-documento.dto';
-import { UpdateDocumentoDto } from './dto/update-documento.dto';
 
 @Controller('documento')
 export class DocumentoController {
@@ -30,16 +31,34 @@ export class DocumentoController {
     return this.documentoService.findOne(+id);
   }
 
-  @Patch(':id')
-  update(
-    @Param('id') id: string,
-    @Body() updateDocumentoDto: UpdateDocumentoDto,
-  ) {
-    return this.documentoService.update(+id, updateDocumentoDto);
-  }
+  @Get('download/:filename')
+  downloadPdf(
+    @Param('filename') filename: string,
+    @Res({ passthrough: true }) res: Response,
+  ): StreamableFile {
+    // Obtém o stream e infos do arquivo
+    type PdfStreamResult = {
+      stream: import('stream').Readable;
+      stat: { size: number };
+    };
+    let fileData: PdfStreamResult;
+    try {
+      fileData = this.documentoService.getPdfStream(
+        filename,
+      ) as PdfStreamResult;
+    } catch {
+      throw new NotFoundException('Arquivo não encontrado');
+    }
 
-  @Delete(':id')
-  remove(@Param('id') id: string) {
-    return this.documentoService.remove(+id);
+    const { stream, stat } = fileData;
+
+    // Cabeçalhos para forçar o download
+    res.set({
+      'Content-Type': 'application/pdf',
+      'Content-Disposition': `attachment; filename="${filename}"`,
+      'Content-Length': stat.size,
+    });
+
+    return new StreamableFile(stream);
   }
 }
