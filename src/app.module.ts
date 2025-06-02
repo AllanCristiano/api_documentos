@@ -13,7 +13,7 @@ import { TypeOrmModule } from '@nestjs/typeorm';
       port: 5432,
       username: 'usuario',
       password: 'senha123',
-      database: 'meubanco',
+      database: 'pma',
       autoLoadEntities: true,
       synchronize: true,
     }),

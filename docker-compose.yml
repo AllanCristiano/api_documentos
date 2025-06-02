@@ -6,7 +6,7 @@ services:
     environment:
       POSTGRES_USER: usuario
       POSTGRES_PASSWORD: senha123
-      POSTGRES_DB: meubanco
+      POSTGRES_DB: pma
     ports:
       - "5432:5432"
     volumes:

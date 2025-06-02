@@ -7,7 +7,7 @@ async function bootstrap() {
 
   // Permitir requisições vindas do Next.js em localhost:3000
   app.enableCors({
-    origin: 'http://localhost:3000',
+    origin: '*',
   });
 
   await app.listen(3001);
