@@ -9,10 +9,12 @@ import { createReadStream, statSync } from 'fs';
 @Injectable()
 export class DocumentoService {
   private readonly pdfDirectory = join(process.cwd(), 'pdfs');
+
   constructor(
     @InjectRepository(Documento)
     private readonly documentoRepository: Repository<Documento>,
   ) {}
+
   async create(createDocumentoDto: CreateDocumentoDto): Promise<Documento> {
     const novoDocumento = this.documentoRepository.create(createDocumentoDto);
     return this.documentoRepository.save(novoDocumento);
@@ -23,9 +25,7 @@ export class DocumentoService {
   }
 
   async findOne(id: number): Promise<Documento> {
-    const documento = await this.documentoRepository.findOneBy({
-      id: id,
-    });
+    const documento = await this.documentoRepository.findOneBy({ id });
     if (!documento) {
       throw new Error(`Documento with id ${id} not found`);
     }
@@ -35,7 +35,7 @@ export class DocumentoService {
   getPdfStream(filename: string) {
     const filePath = join(this.pdfDirectory, filename);
 
-    // Lança exceção se não existir
+    // Lança exceção se o arquivo não existir
     try {
       statSync(filePath);
     } catch {
@@ -54,5 +54,18 @@ export class DocumentoService {
     }
     documento.date = novaData;
     return this.documentoRepository.save(documento);
+  }
+
+  // Método para deletar um documento
+  async remove(id: string): Promise<boolean> {
+    // Converte o id de string para number; 
+    // o parseFloat é utilizado para capturar números com ponto (ex.: "5.660")
+    const numericId = parseFloat(id);
+    const documento = await this.documentoRepository.findOneBy({ id: numericId });
+    if (!documento) {
+      throw new NotFoundException(`Documento com id ${id} não encontrado`);
+    }
+    await this.documentoRepository.remove(documento);
+    return true;
   }
 }

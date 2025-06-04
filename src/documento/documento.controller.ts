@@ -2,6 +2,8 @@ import {
   Controller,
   Get,
   Post,
+  Delete,
+  Patch,
   Body,
   Param,
   Res,
@@ -11,7 +13,6 @@ import {
 import { Response } from 'express';
 import { DocumentoService } from './documento.service';
 import { CreateDocumentoDto } from './dto/create-documento.dto';
-import { Patch } from '@nestjs/common';
 
 @Controller('documento')
 export class DocumentoController {
@@ -42,11 +43,10 @@ export class DocumentoController {
       stream: import('stream').Readable;
       stat: { size: number };
     };
+
     let fileData: PdfStreamResult;
     try {
-      fileData = this.documentoService.getPdfStream(
-        filename,
-      ) as PdfStreamResult;
+      fileData = this.documentoService.getPdfStream(filename) as PdfStreamResult;
     } catch {
       throw new NotFoundException('Arquivo não encontrado');
     }
@@ -65,10 +65,19 @@ export class DocumentoController {
 
   @Patch('data/:numero')
   async atualizaData(
-    // Atualiza a data de um documento
     @Param('numero') numero: string,
     @Body('novaData') novaData: string,
   ) {
     return this.documentoService.atualizaData(numero, novaData);
+  }
+
+  // Rota DELETE com wildcard para capturar IDs com caracteres especiais, como pontos.
+  @Delete(':id')
+  async remove(@Param('id') id: string) {
+    const deletedDocument = await this.documentoService.remove(id);
+    if (!deletedDocument) {
+      throw new NotFoundException(`Documento com id ${id} não encontrado`);
+    }
+    return { message: 'Documento deletado com sucesso' };
   }
 }
