@@ -11,6 +11,7 @@ import {
 import { Response } from 'express';
 import { DocumentoService } from './documento.service';
 import { CreateDocumentoDto } from './dto/create-documento.dto';
+import { Patch } from '@nestjs/common';
 
 @Controller('documento')
 export class DocumentoController {
@@ -60,5 +61,14 @@ export class DocumentoController {
     });
 
     return new StreamableFile(stream);
+  }
+
+  @Patch('data/:numero')
+  async atualizaData(
+    // Atualiza a data de um documento
+    @Param('numero') numero: string,
+    @Body('novaData') novaData: string,
+  ) {
+    return this.documentoService.atualizaData(numero, novaData);
   }
 }

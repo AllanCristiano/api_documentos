@@ -1,28 +1,28 @@
 ### Criar um Documento (POST)
-POST http://localhost:3000/documento
+POST http://localhost:3001/documento
 Content-Type: application/json
 
 {
-  "type": "DECRETO",
-  "number": "6.137",
-  "title": "Novo Decreto",
+  "type": "PORTARIA",
+  "number": "1234/2024",
+  "title": "DECRETO Nº 6.137",
   "description": "Descrição do decreto",
   "date": "2025-05-28",
   "url": ""
 }
 
 ### Listar Todos os Documentos (GET)
-GET http://localhost:3000/documento
+GET http://localhost:3001/documento
 
 ### Buscar Documento por ID (GET)
-GET http://localhost:3000/documento/1
+GET http://localhost:3001/documento/1
 
 ### Atualizar Documento (PUT)
-PUT http://localhost:3000/documento/1
+PUT http://localhost:3001/documento/1
 Content-Type: application/json
 
 {
-  "type": "DECRETO",
+  "type": "PORTARIA",
   "number": "5678",
   "title": "Alteração de Decreto",
   "description": "Nova descrição",
@@ -31,4 +31,13 @@ Content-Type: application/json
 }
 
 ### Deletar Documento (DELETE)
-DELETE http://localhost:3000/documento/1
+DELETE http://localhost:3001/documento/1
+
+### Atualizar Data do Documento (PATCH)
+PATCH http://localhost:3001/documento/data/6.137
+Content-Type: application/json
+
+{
+  "novaData": "2025-06-01"
+}
+

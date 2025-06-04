@@ -46,4 +46,13 @@ export class DocumentoService {
     const stat = statSync(filePath);
     return { stream, stat };
   }
+
+  async atualizaData(numero: string, novaData: string): Promise<Documento> {
+    const documento = await this.documentoRepository.findOneBy({ number: numero });
+    if (!documento) {
+      throw new NotFoundException(`Documento com número ${numero} não encontrado`);
+    }
+    documento.date = novaData;
+    return this.documentoRepository.save(documento);
+  }
 }
