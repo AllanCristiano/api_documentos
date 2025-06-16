@@ -21,7 +21,11 @@ export class DocumentoService {
   }
 
   async findAll(): Promise<Documento[]> {
-    return await this.documentoRepository.find();
+  return await this.documentoRepository.find({
+    order: {
+        date: 'DESC',
+    },
+    });
   }
 
   async findOne(id: number): Promise<Documento> {
