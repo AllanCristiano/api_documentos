@@ -59,17 +59,4 @@ export class DocumentoService {
     documento.date = novaData;
     return this.documentoRepository.save(documento);
   }
-
-  // Método para deletar um documento
-  async remove(id: string): Promise<boolean> {
-    // Converte o id de string para number; 
-    // o parseFloat é utilizado para capturar números com ponto (ex.: "5.660")
-    const numericId = parseFloat(id);
-    const documento = await this.documentoRepository.findOneBy({ id: numericId });
-    if (!documento) {
-      throw new NotFoundException(`Documento com id ${id} não encontrado`);
-    }
-    await this.documentoRepository.remove(documento);
-    return true;
-  }
 }

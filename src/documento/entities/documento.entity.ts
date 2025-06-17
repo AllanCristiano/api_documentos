@@ -16,4 +16,6 @@ export class Documento {
   date: string;
   @Column()
   url: string;
+  @Column()
+  fullText: string;
 }

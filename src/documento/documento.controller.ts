@@ -70,14 +70,4 @@ export class DocumentoController {
   ) {
     return this.documentoService.atualizaData(numero, novaData);
   }
-
-  // Rota DELETE com wildcard para capturar IDs com caracteres especiais, como pontos.
-  @Delete(':id')
-  async remove(@Param('id') id: string) {
-    const deletedDocument = await this.documentoService.remove(id);
-    if (!deletedDocument) {
-      throw new NotFoundException(`Documento com id ${id} não encontrado`);
-    }
-    return { message: 'Documento deletado com sucesso' };
-  }
 }
