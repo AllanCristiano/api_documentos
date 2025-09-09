@@ -102,7 +102,7 @@ export class OcrService {
   }
 
   private extractInfo(text: string, pattern: RegExp) {
-    const headerText = text.substring(0, 1500);
+    const headerText = text.substring(0, 3000);
     const match = headerText.match(pattern);
 
     if (!match) {
@@ -162,6 +162,6 @@ export class OcrService {
 
   private getSnippet(text: string, startIndex = 0): string {
     const content = text.substring(startIndex).trim();
-    return content.split(/\s+/).slice(0, 30).join(' ') + '...';
+    return content.split(/\s+/).slice(0, 50).join(' ') + '...';
   }
 }
