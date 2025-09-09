@@ -2,7 +2,6 @@ import {
   Controller,
   Get,
   Post,
-  Delete,
   Patch,
   Body,
   Param,
@@ -46,7 +45,9 @@ export class DocumentoController {
 
     let fileData: PdfStreamResult;
     try {
-      fileData = this.documentoService.getPdfStream(filename) as PdfStreamResult;
+      fileData = this.documentoService.getPdfStream(
+        filename,
+      ) as PdfStreamResult;
     } catch {
       throw new NotFoundException('Arquivo não encontrado');
     }

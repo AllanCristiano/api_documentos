@@ -21,10 +21,10 @@ export class DocumentoService {
   }
 
   async findAll(): Promise<Documento[]> {
-  return await this.documentoRepository.find({
-    order: {
+    return await this.documentoRepository.find({
+      order: {
         date: 'DESC',
-    },
+      },
     });
   }
 
@@ -52,9 +52,13 @@ export class DocumentoService {
   }
 
   async atualizaData(numero: string, novaData: string): Promise<Documento> {
-    const documento = await this.documentoRepository.findOneBy({ number: numero });
+    const documento = await this.documentoRepository.findOneBy({
+      number: numero,
+    });
     if (!documento) {
-      throw new NotFoundException(`Documento com número ${numero} não encontrado`);
+      throw new NotFoundException(
+        `Documento com número ${numero} não encontrado`,
+      );
     }
     documento.date = novaData;
     return this.documentoRepository.save(documento);
