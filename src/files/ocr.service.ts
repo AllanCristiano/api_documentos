@@ -6,18 +6,25 @@ import {
 import { createWorker } from 'tesseract.js';
 import * as path from 'path';
 import * as fs from 'fs';
+import { promises as fsPromises } from 'fs';
 import { randomBytes } from 'crypto';
 import { execSync } from 'child_process';
 
 // Tipos de documentos e suas configurações de regex
 const DOC_TYPES = {
+  // NOTA: A complexidade desta regex foi apontada pelo SonarLint.
+  // Para este caso de uso específico, ela é aceitável, mas pode ser otimizada se causar lentidão.
   portaria: {
     pattern:
       /PORTARIA\s+N\.?[º°o]?\s*([\d./]+)\s*DE\s+((?:\d{1,2}\s+de\s+\w+\s+de\s+\d{4})|(?:\d{2}\.\d{2}\.\d{4}))/i,
   },
-  lei: {
+  lei_ordinaria: {
     pattern:
-      /LEI(?:\s+COMPLEMENTAR)?\s+N\.?\s*[º°o]?\s*([\d.,]+)\s*DE\s+(\d{1,2}\s+de\s+\w+\s+de\s+\d{4})/i,
+      /LEI\s+N\.?\s*[º°o]?\s*([\d.,]+)\s*DE\s+(\d{1,2}\s+de\s+\w+\s+de\s+\d{4})/i,
+  },
+  lei_complementar: {
+    pattern:
+      /LEI\s+COMPLEMENTAR\s+N\.?\s*[º°o]?\s*([\d.,]+)\s*DE\s+(\d{1,2}\s+de\s+\w+\s+de\s+\d{4})/i,
   },
   decreto: {
     pattern:
@@ -46,8 +53,18 @@ export class OcrService {
       );
       console.log('Extração concluída.');
 
+      // Salva o arquivo com o novo nome
+      const savedFilePath = await this.saveFile(
+        // FIX: Argumentos formatados em múltiplas linhas (Prettier)
+        file.buffer,
+        docType,
+        extractedData,
+      );
+
       return {
+        message: 'Arquivo processado e salvo com sucesso!',
         documentType: docType,
+        filePath: savedFilePath,
         ...extractedData,
         fullText,
       };
@@ -57,6 +74,44 @@ export class OcrService {
         'Falha ao processar o arquivo PDF.',
       );
     }
+  }
+
+  private async saveFile(
+    originalFileBuffer: Buffer,
+    docType: string,
+    extractedData: { numero_doc: string; data_doc: string },
+  ): Promise<string> {
+    let newFileName: string;
+
+    // FIX: Condição formatada em múltiplas linhas (Prettier)
+    if (
+      extractedData.numero_doc === 'Não encontrado' ||
+      extractedData.data_doc === 'Data inválida'
+    ) {
+      const randomName = randomBytes(8).toString('hex');
+      const datePrefix = new Date().toISOString().split('T')[0];
+      newFileName = `${datePrefix}_${docType}_OCR-FALHOU_${randomName}.pdf`;
+      console.warn(
+        'Dados não encontrados no OCR. Salvando com nome de arquivo alternativo:',
+        newFileName,
+      );
+    } else {
+      // FIX: Removido escape desnecessário de '\/' para '/'. (ESLint/SonarLint)
+      const sanitizedDocNumber = extractedData.numero_doc.replace(/[/ ]/g, '-');
+      newFileName = `${sanitizedDocNumber.replace(/,/g, '')}_${extractedData.data_doc}.pdf`;
+    }
+
+    const saveDir = path.join(__dirname, '..', '..', 'storage');
+    const filePath = path.join(saveDir, newFileName);
+
+    if (!fs.existsSync(saveDir)) {
+      fs.mkdirSync(saveDir, { recursive: true });
+    }
+
+    await fsPromises.writeFile(filePath, originalFileBuffer);
+    console.log(`Arquivo salvo com sucesso em: ${filePath}`);
+
+    return filePath;
   }
 
   private async getTextFromPdf(pdfBuffer: Buffer): Promise<string> {
@@ -88,7 +143,8 @@ export class OcrService {
         const {
           data: { text },
         } = await worker.recognize(imagePath);
-        const pageNumber = imageFile.match(/page-(\d+)/)?.[1] || '?';
+        // FIX: Trocado 'match' por 'exec' (SonarLint)
+        const pageNumber = /page-(\d+)/.exec(imageFile)?.[1] || '?';
         fullText += `--- Página ${pageNumber} ---\n${text}\n\n`;
       }
     } finally {
@@ -103,7 +159,8 @@ export class OcrService {
 
   private extractInfo(text: string, pattern: RegExp) {
     const headerText = text.substring(0, 3000);
-    const match = headerText.match(pattern);
+    // FIX: Trocado 'match' por 'exec' (SonarLint)
+    const match = pattern.exec(headerText);
 
     if (!match) {
       return {
@@ -140,8 +197,8 @@ export class OcrService {
       dezembro: '12',
     };
 
-    // 1. Tenta o formato "DD de MÊS de AAAA"
-    let match = dateText.match(/(\d{1,2})\s+de\s+(\w+)\s+de\s+(\d{4})/i);
+    // FIX: Trocado 'match' por 'exec' (SonarLint)
+    let match = /(\d{1,2})\s+de\s+(\w+)\s+de\s+(\d{4})/i.exec(dateText);
     if (match) {
       const [, dia, mes, ano] = match;
       const mesNome = mes.toLowerCase();
@@ -150,8 +207,8 @@ export class OcrService {
       }
     }
 
-    // 2. Se falhar, tenta o formato "DD.MM.AAAA"
-    match = dateText.match(/(\d{2})\.(\d{2})\.(\d{4})/);
+    // FIX: Trocado 'match' por 'exec' (SonarLint)
+    match = /(\d{2})\.(\d{2})\.(\d{4})/.exec(dateText);
     if (match) {
       const [, dia, mes, ano] = match;
       return `${ano}-${mes}-${dia}`;

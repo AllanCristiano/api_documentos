@@ -12,14 +12,13 @@ import { OcrService } from './ocr.service';
 import { diskStorage } from 'multer';
 import { extname } from 'path';
 
-// 👈 1. Defina a classe DTO aqui
+// DTO para o corpo da requisição de OCR
 class OcrRequestDto {
-  docType: 'portaria' | 'lei' | 'decreto';
+  docType: 'PORTARIA' | 'LEI_ORDINARIA' | 'DECRETO' | 'LEI_COMPLEMENTAR';
 }
 
 @Controller('files')
 export class FilesController {
-  // 👈 2. Injete o OcrService no construtor
   constructor(
     private readonly filesService: FilesService,
     private readonly ocrService: OcrService,
@@ -64,11 +63,38 @@ export class FilesController {
    */
   @Post('ocr')
   @UseInterceptors(FileInterceptor('file'))
-  // 👈 3. Adicione async e await
   async processOcr(
     @UploadedFile() file: Express.Multer.File,
-    @Body() body: OcrRequestDto, // 👈 Use o decorator @Body()
+    @Body() body: OcrRequestDto,
   ) {
-    return await this.ocrService.processPdf(file, body.docType);
+    // Define os tipos exatos que o serviço espera receber
+    type ServiceDocType =
+      | 'portaria'
+      | 'decreto'
+      | 'lei_ordinaria'
+      | 'lei_complementar';
+    let serviceDocType: ServiceDocType;
+
+    // Mapeia o tipo recebido na requisição para o tipo esperado pelo serviço
+    switch (body.docType) {
+      case 'PORTARIA':
+        serviceDocType = 'portaria';
+        break;
+      case 'DECRETO':
+        serviceDocType = 'decreto';
+        break;
+      case 'LEI_ORDINARIA':
+        serviceDocType = 'lei_ordinaria'; // Trata como um tipo específico
+        break;
+      case 'LEI_COMPLEMENTAR':
+        serviceDocType = 'lei_complementar'; // Trata como outro tipo específico
+        break;
+      default:
+        // Garante que um tipo de documento inesperado cause um erro claro
+        throw new BadRequestException('Tipo de documento inválido.');
+    }
+
+    // Chama o serviço com o tipo de documento já mapeado e correto
+    return await this.ocrService.processPdf(file, serviceDocType);
   }
 }
