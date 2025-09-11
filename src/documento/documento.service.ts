@@ -40,23 +40,23 @@ export class DocumentoService {
     // --- LÓGICA PARA MOVER O ARQUIVO ---
     // Supondo que o DTO contenha o nome do arquivo, ex: 'documento-123.pdf'
     // Se o nome do arquivo não vier no DTO, você precisará obtê-lo de outra forma.
-    const filename = createDocumentoDto.number + '_' + createDocumentoDto.date + '.pdf';
+    // const filename = createDocumentoDto.number + '_' + createDocumentoDto.date + '.pdf';
 
-    const sourcePath = join(this.originDirectory, filename);
-    const destinationPath = join(this.destinationDirectory, filename);
+    // const sourcePath = join(this.originDirectory, filename);
+    // const destinationPath = join(this.destinationDirectory, filename);
 
-    try {
-      // 2. Tenta mover o arquivo do diretório de origem para o de destino
-      await rename(sourcePath, destinationPath);
-      console.log(`Arquivo ${filename} movido com sucesso!`);
-    } catch (error) {
-      // 3. Se ocorrer um erro (ex: arquivo não existe), lança uma exceção
-      console.error('Erro ao mover o arquivo:', error);
-      if (error.code === 'ENOENT') { // ENOENT = Error NO ENTry (arquivo não encontrado)
-        throw new NotFoundException(`O arquivo de origem ${filename} não foi encontrado.`);
-      }
-      throw new InternalServerErrorException('Não foi possível processar o arquivo do documento.');
-    }
+    // try {
+    //   // 2. Tenta mover o arquivo do diretório de origem para o de destino
+    //   await rename(sourcePath, destinationPath);
+    //   console.log(`Arquivo ${filename} movido com sucesso!`);
+    // } catch (error) {
+    //   // 3. Se ocorrer um erro (ex: arquivo não existe), lança uma exceção
+    //   console.error('Erro ao mover o arquivo:', error);
+    //   if (error.code === 'ENOENT') { // ENOENT = Error NO ENTry (arquivo não encontrado)
+    //     throw new NotFoundException(`O arquivo de origem ${filename} não foi encontrado.`);
+    //   }
+    //   throw new InternalServerErrorException('Não foi possível processar o arquivo do documento.');
+    // }
 
     // 4. Se o arquivo foi movido com sucesso, cria e salva o registro no banco
     const novoDocumento = this.documentoRepository.create(createDocumentoDto);
