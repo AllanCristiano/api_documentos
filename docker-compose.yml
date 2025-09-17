@@ -1,4 +1,6 @@
+# Definição dos serviços (contêineres)
 services:
+  # Serviço do Banco de Dados PostgreSQL
   db:
     image: postgres:15
     container_name: postgres_db
@@ -11,6 +13,51 @@ services:
       - "5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
+    networks: # Adicionado à mesma rede para comunicação
+      - app_network
 
+  # Serviço do MinIO (armazenamento de objetos)
+  minio:
+    image: quay.io/minio/minio:latest
+    container_name: minio
+    command: server /data --console-address ":9001"
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    environment:
+      - MINIO_ROOT_USER=admin
+      - MINIO_ROOT_PASSWORD=password
+    volumes:
+      - minio_data:/data
+    networks:
+      - app_network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 30s
+      timeout: 20s
+      retries: 3
+
+  # Serviço para criar o bucket no MinIO após ele iniciar
+  create-bucket:
+    image: quay.io/minio/mc:latest
+    depends_on:
+      - minio
+    networks:
+      - app_network
+    entrypoint: >
+      /bin/sh -c "
+      set -x;
+      /usr/bin/mc alias set myminio http://minio:9000 admin password;
+      /usr/bin/mc mb myminio/meu-bucket;
+      /usr/bin/mc policy set public myminio/meu-bucket;
+      exit 0;
+      "
+
+# Definição dos volumes (para persistir dados)
 volumes:
   postgres_data:
+  minio_data:
+
+# Definição das redes
+networks:
+  app_network:
