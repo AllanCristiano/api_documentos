@@ -8,6 +8,8 @@ import {
   Res,
   StreamableFile,
   NotFoundException,
+  ParseIntPipe,
+  Put,
 } from '@nestjs/common';
 import { Response } from 'express';
 import { DocumentoService } from './documento.service';
@@ -70,5 +72,14 @@ export class DocumentoController {
     @Body('novaData') novaData: string,
   ) {
     return this.documentoService.atualizaData(numero, novaData);
+  }
+
+  @Put(':id')
+  update(
+    @Param('id', ParseIntPipe) id: number, // Usa o ID e converte para número
+    @Body() updateDocumentoDto: Partial<CreateDocumentoDto>,
+  ) {
+    // Chama o service, passando o ID
+    return this.documentoService.update(id, updateDocumentoDto);
   }
 }

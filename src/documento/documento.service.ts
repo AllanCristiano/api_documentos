@@ -16,8 +16,7 @@ import { rename } from 'fs/promises';
 export class DocumentoService {
   // Defina os diretórios de origem e destino
   private readonly originDirectory = '/home/allan/Documentos/api_documentos/storage';
-  private readonly destinationDirectory = '/home/allan/Documentos/api_documentos/processed'; // Ex: uma pasta para arquivos processados
-
+  private readonly destinationDirectory = '/home/allan/Documentos/api_documentos/processed';
   private readonly pdfDirectory = join(process.cwd(), 'pdfs');
 
   constructor(
@@ -63,7 +62,7 @@ export class DocumentoService {
     return this.documentoRepository.save(novoDocumento);
   }
 
-  // ... o resto dos seus métodos permanece igual ...
+  
   async findAll(): Promise<Documento[]> {
     return await this.documentoRepository.find({
       order: {
@@ -112,6 +111,22 @@ export class DocumentoService {
       );
     }
     documento.date = novaData;
+    return this.documentoRepository.save(documento);
+  }
+
+  async update(id: number, updateDocumentoDto: Partial<CreateDocumentoDto>): Promise<Documento> {
+    const documento = await this.documentoRepository.preload({
+      id: id,
+      ...updateDocumentoDto,
+    });
+
+    if (!documento) {
+      throw new NotFoundException(
+        `Documento com ID ${id} não encontrado`,
+      );
+    }
+    
+    // Salva a entidade atualizada
     return this.documentoRepository.save(documento);
   }
 }
