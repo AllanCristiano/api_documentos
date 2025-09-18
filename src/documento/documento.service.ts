@@ -35,7 +35,9 @@ export class DocumentoService {
     const { tempFilename, ...documentoData } = createDocumentoDto;
 
     // 1. CORREÇÃO: Use 'documentoData.type' em vez de 'docType'
-    const finalFilename = `${documentoData.number.replace('_', '-')}-${documentoData.type}`;
+    const finalFilename = `${documentoData.type}/${documentoData.number.replace('_', '')
+      .replace('/', '')
+      .replace('.', '')}-${documentoData.date}`;
 
     // 2. CORREÇÃO: Corrija o nome do método para 'moveTempFileToMinio' (com 'o' minúsculo)
     const uploadResult = await this.filesService.moveTempFileToMinio(
