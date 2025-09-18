@@ -4,6 +4,7 @@ import { AppService } from './app.service';
 import { DocumentoModule } from './documento/documento.module';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { FilesModule } from './files/files.module';
+import { ConfigModule } from '@nestjs/config';
 
 @Module({
   imports: [
@@ -18,6 +19,7 @@ import { FilesModule } from './files/files.module';
       autoLoadEntities: true,
       synchronize: true,
     }),
+    ConfigModule.forRoot({ isGlobal: true }),
     FilesModule,
   ],
   controllers: [AppController],

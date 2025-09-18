@@ -1,3 +1,5 @@
+// src/files/files.controller.ts
+
 import {
   Controller,
   Post,
@@ -11,8 +13,20 @@ import { FilesService } from './files.service';
 import { OcrService } from './ocr.service';
 import { diskStorage } from 'multer';
 import { extname } from 'path';
+import { IsNotEmpty, IsString } from 'class-validator';
 
-// DTO para o corpo da requisição de OCR
+// DTO para validar o corpo da requisição da nova rota de finalização
+class FinalizeUploadDto {
+  @IsString()
+  @IsNotEmpty()
+  tempFilename: string;
+
+  @IsString()
+  @IsNotEmpty()
+  finalFilename: string;
+}
+
+// Seu DTO de OCR original (sem alterações)
 class OcrRequestDto {
   docType: 'PORTARIA' | 'LEI_ORDINARIA' | 'DECRETO' | 'LEI_COMPLEMENTAR';
 }
@@ -24,9 +38,15 @@ export class FilesController {
     private readonly ocrService: OcrService,
   ) {}
 
-  @Post('upload-pdf')
+  // --- MUDANÇA 1: A rota 'upload-pdf' foi renomeada e simplificada ---
+  /**
+   * ETAPA 1: Salva o PDF temporariamente no disco do servidor.
+   * Retorna um identificador (o próprio nome do arquivo) para ser usado na próxima etapa.
+   */
+  @Post('upload-temporary-pdf')
   @UseInterceptors(
     FileInterceptor('file', {
+      // A configuração do multer permanece a mesma
       storage: diskStorage({
         destination: './uploads',
         filename: (req, file, callback) => {
@@ -49,17 +69,37 @@ export class FilesController {
       },
     }),
   )
-  uploadPdf(@UploadedFile() file: Express.Multer.File) {
+  uploadTemporaryPdf(@UploadedFile() file: Express.Multer.File) {
     if (!file) {
       throw new BadRequestException('Nenhum arquivo enviado.');
     }
-    console.log(file);
-    return this.filesService.processPdf(file);
+
+    // A chamada para 'processPdf' foi removida.
+    // Agora, apenas retornamos o nome do arquivo temporário.
+    return {
+      message: 'Arquivo enviado temporariamente. Prossiga para a finalização.',
+      tempFilename: file.filename,
+    };
   }
 
+  // --- MUDANÇA 2: Uma nova rota foi criada para a finalização ---
+  /**
+   * ETAPA 2: Recebe o nome do arquivo temporário e o nome final desejado,
+   * e chama o serviço para mover o arquivo para o MinIO.
+   */
+  @Post('finalize-upload')
+  async finalizeUpload(@Body() finalizeUploadDto: FinalizeUploadDto) {
+    // Graças ao DTO e ao ValidationPipe, já sabemos que os dados estão presentes e são strings.
+    // A chamada agora é para o novo método do nosso serviço.
+    return this.filesService.moveTempFileToMinio(
+      finalizeUploadDto.tempFilename,
+      finalizeUploadDto.finalFilename,
+    );
+  }
+
+  // --- SEM MUDANÇAS: Sua rota de OCR permanece exatamente como estava ---
   /**
    * Rota para processar OCR de um arquivo PDF.
-   * Espera um corpo 'form-data' com um campo 'file' (PDF) e um campo 'docType'.
    */
   @Post('ocr')
   @UseInterceptors(FileInterceptor('file'))
@@ -67,15 +107,21 @@ export class FilesController {
     @UploadedFile() file: Express.Multer.File,
     @Body() body: OcrRequestDto,
   ) {
-    // Define os tipos exatos que o serviço espera receber
+    if (!file) {
+      throw new BadRequestException('Nenhum arquivo para OCR recebido.');
+    }
+
+    // O tipo específico que seu serviço espera
     type ServiceDocType =
       | 'portaria'
       | 'decreto'
       | 'lei_ordinaria'
       | 'lei_complementar';
+
+    // A variável que irá guardar o tipo mapeado e seguro
     let serviceDocType: ServiceDocType;
 
-    // Mapeia o tipo recebido na requisição para o tipo esperado pelo serviço
+    // O switch já garante que apenas valores válidos serão atribuídos
     switch (body.docType) {
       case 'PORTARIA':
         serviceDocType = 'portaria';
@@ -84,17 +130,19 @@ export class FilesController {
         serviceDocType = 'decreto';
         break;
       case 'LEI_ORDINARIA':
-        serviceDocType = 'lei_ordinaria'; // Trata como um tipo específico
+        serviceDocType = 'lei_ordinaria';
         break;
       case 'LEI_COMPLEMENTAR':
-        serviceDocType = 'lei_complementar'; // Trata como outro tipo específico
+        serviceDocType = 'lei_complementar';
         break;
       default:
-        // Garante que um tipo de documento inesperado cause um erro claro
-        throw new BadRequestException('Tipo de documento inválido.');
+        // Se o docType for inválido, lance um erro claro
+        throw new BadRequestException(
+          `Tipo de documento inválido: ${body.docType}`,
+        );
     }
 
-    // Chama o serviço com o tipo de documento já mapeado e correto
+    // Agora a chamada é 100% segura, sem a necessidade de 'as any'
     return await this.ocrService.processPdf(file, serviceDocType);
   }
 }

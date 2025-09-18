@@ -2,7 +2,6 @@ import {
   Injectable,
   NotFoundException,
   ConflictException,
-  InternalServerErrorException, // 👈 Importe esta exceção
 } from '@nestjs/common';
 import { CreateDocumentoDto } from './dto/create-documento.dto';
 import { InjectRepository } from '@nestjs/typeorm';
@@ -10,22 +9,19 @@ import { Documento } from './entities/documento.entity';
 import { Repository } from 'typeorm';
 import { join } from 'path';
 import { createReadStream, statSync } from 'fs';
-import { rename } from 'fs/promises'; 
+import { FilesService } from 'src/files/files.service';
 
 @Injectable()
 export class DocumentoService {
-  // Defina os diretórios de origem e destino
-  private readonly originDirectory = '/home/allan/Documentos/api_documentos/storage';
-  private readonly destinationDirectory = '/home/allan/Documentos/api_documentos/processed';
   private readonly pdfDirectory = join(process.cwd(), 'pdfs');
 
   constructor(
     @InjectRepository(Documento)
     private readonly documentoRepository: Repository<Documento>,
+    private readonly filesService: FilesService,
   ) {}
 
   async create(createDocumentoDto: CreateDocumentoDto): Promise<Documento> {
-    // 1. Busca se já existe um documento com o mesmo número
     const documentoExistente = await this.documentoRepository.findOneBy({
       number: createDocumentoDto.number,
     });
@@ -36,33 +32,25 @@ export class DocumentoService {
       );
     }
 
-    // --- LÓGICA PARA MOVER O ARQUIVO ---
-    // Supondo que o DTO contenha o nome do arquivo, ex: 'documento-123.pdf'
-    // Se o nome do arquivo não vier no DTO, você precisará obtê-lo de outra forma.
-    // const filename = createDocumentoDto.number + '_' + createDocumentoDto.date + '.pdf';
+    const { tempFilename, ...documentoData } = createDocumentoDto;
 
-    // const sourcePath = join(this.originDirectory, filename);
-    // const destinationPath = join(this.destinationDirectory, filename);
+    // 1. CORREÇÃO: Use 'documentoData.type' em vez de 'docType'
+    const finalFilename = `${documentoData.number.replace('_', '-')}-${documentoData.type}`;
 
-    // try {
-    //   // 2. Tenta mover o arquivo do diretório de origem para o de destino
-    //   await rename(sourcePath, destinationPath);
-    //   console.log(`Arquivo ${filename} movido com sucesso!`);
-    // } catch (error) {
-    //   // 3. Se ocorrer um erro (ex: arquivo não existe), lança uma exceção
-    //   console.error('Erro ao mover o arquivo:', error);
-    //   if (error.code === 'ENOENT') { // ENOENT = Error NO ENTry (arquivo não encontrado)
-    //     throw new NotFoundException(`O arquivo de origem ${filename} não foi encontrado.`);
-    //   }
-    //   throw new InternalServerErrorException('Não foi possível processar o arquivo do documento.');
-    // }
+    // 2. CORREÇÃO: Corrija o nome do método para 'moveTempFileToMinio' (com 'o' minúsculo)
+    const uploadResult = await this.filesService.moveTempFileToMinio(
+      tempFilename,
+      finalFilename,
+    );
 
-    // 4. Se o arquivo foi movido com sucesso, cria e salva o registro no banco
-    const novoDocumento = this.documentoRepository.create(createDocumentoDto);
+    const novoDocumento = this.documentoRepository.create({
+      ...documentoData,
+      url: uploadResult.url,
+    });
+
     return this.documentoRepository.save(novoDocumento);
   }
 
-  
   async findAll(): Promise<Documento[]> {
     return await this.documentoRepository.find({
       order: {
@@ -74,7 +62,9 @@ export class DocumentoService {
   async findByNumber(number: string): Promise<Documento> {
     const documento = await this.documentoRepository.findOneBy({ number });
     if (!documento) {
-      throw new NotFoundException(`Documento com número ${number} não encontrado`);
+      throw new NotFoundException(
+        `Documento com número ${number} não encontrado`,
+      );
     }
     return documento;
   }
@@ -114,18 +104,19 @@ export class DocumentoService {
     return this.documentoRepository.save(documento);
   }
 
-  async update(id: number, updateDocumentoDto: Partial<CreateDocumentoDto>): Promise<Documento> {
+  async update(
+    id: number,
+    updateDocumentoDto: Partial<CreateDocumentoDto>,
+  ): Promise<Documento> {
     const documento = await this.documentoRepository.preload({
       id: id,
       ...updateDocumentoDto,
     });
 
     if (!documento) {
-      throw new NotFoundException(
-        `Documento com ID ${id} não encontrado`,
-      );
+      throw new NotFoundException(`Documento com ID ${id} não encontrado`);
     }
-    
+
     // Salva a entidade atualizada
     return this.documentoRepository.save(documento);
   }
