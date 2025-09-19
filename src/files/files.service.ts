@@ -1,7 +1,7 @@
 // src/files/files.service.ts
 
 import { Injectable, NotFoundException } from '@nestjs/common';
-import { MinioService } from './minio.service'; // Importe o MinioService
+import { MinioService } from './minio.service';
 import * as fs from 'fs';
 import * as path from 'path';
 
@@ -11,8 +11,31 @@ export class FilesService {
   constructor(private readonly minioService: MinioService) {}
 
   /**
+   * ESTE É O NOVO MÉTODO PARA BAIXAR O ARQUIVO.
+   * Ele recebe o nome de um objeto (arquivo) e solicita ao MinioService
+   * que o baixe do bucket.
+   *
+   * @param objectName O nome do arquivo a ser baixado do MinIO.
+   * @returns Uma Promise que resolve para um Buffer com os dados do arquivo.
+   */
+  async downloadFileFromMinio(objectName: string): Promise<Buffer> {
+    try {
+      // Simplesmente repassa a chamada para o método correspondente no MinioService
+      const fileBuffer = await this.minioService.downloadFile(objectName);
+      return fileBuffer;
+    } catch (error) {
+      // Se o MinioService lançar um erro (ex: arquivo não encontrado),
+      // o erro é capturado aqui. Podemos relançá-lo ou tratá-lo.
+      // Lançar NotFoundException é uma boa prática em serviços NestJS.
+      console.error(`Falha ao buscar o arquivo ${objectName} do MinIO.`, error);
+      throw new NotFoundException(
+        `Arquivo "${objectName}" não encontrado no armazenamento.`,
+      );
+    }
+  }
+
+  /**
    * ESTE É O NOVO MÉTODO.
-   * Ele substitui a lógica do antigo 'processPdf'. Sua função é mover um
    * arquivo já salvo temporariamente para o armazenamento permanente no MinIO.
    *
    * @param tempFilename O nome do arquivo na pasta ./uploads (ex: '1678890000000-123456789.pdf').
@@ -58,7 +81,4 @@ export class FilesService {
       throw error;
     }
   }
-
-  // O método 'processPdf' original foi removido pois sua lógica foi
-  // substituída pelo novo fluxo de duas etapas.
 }

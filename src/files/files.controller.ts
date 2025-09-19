@@ -7,6 +7,9 @@ import {
   UseInterceptors,
   BadRequestException,
   Body,
+  Res,
+  Get,
+  Query,
 } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
 import { FilesService } from './files.service';
@@ -14,6 +17,7 @@ import { OcrService } from './ocr.service';
 import { diskStorage } from 'multer';
 import { extname } from 'path';
 import { IsNotEmpty, IsString } from 'class-validator';
+import { Response } from 'express';
 
 // DTO para validar o corpo da requisição da nova rota de finalização
 class FinalizeUploadDto {
@@ -138,11 +142,27 @@ export class FilesController {
       default:
         // Se o docType for inválido, lance um erro claro
         throw new BadRequestException(
-          `Tipo de documento inválido: ${body.docType}`,
+          `Tipo de documento inválido: ${String(body.docType)}`,
         );
     }
 
     // Agora a chamada é 100% segura, sem a necessidade de 'as any'
     return await this.ocrService.processPdf(file, serviceDocType);
   }
+
+  @Get('download')
+  async downloadFile(
+    @Query('filename') filename: string,
+    @Res() res: Response,
+  ) {
+    const fileBuffer = await this.filesService.downloadFileFromMinio(filename);
+
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader(
+      'Content-Disposition',
+      `attachment; filename="${filename.split('/').pop()}"`,
+    );
+    res.send(fileBuffer);
+  }
+  // curl -X GET "http://localhost:3001/files/download?filename=LEI_ORDINARIA/5553-2023-01-10.pdf" -o 5553-2023-01-10.pdf
 }

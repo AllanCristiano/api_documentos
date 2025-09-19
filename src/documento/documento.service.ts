@@ -35,7 +35,8 @@ export class DocumentoService {
     const { tempFilename, ...documentoData } = createDocumentoDto;
 
     // 1. CORREÇÃO: Use 'documentoData.type' em vez de 'docType'
-    const finalFilename = `${documentoData.type}/${documentoData.number.replace('_', '')
+    const finalFilename = `${documentoData.type}/${documentoData.number
+      .replace('_', '')
       .replace('/', '')
       .replace('.', '')}-${documentoData.date}`;
 
