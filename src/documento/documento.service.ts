@@ -123,4 +123,12 @@ export class DocumentoService {
     // Salva a entidade atualizada
     return this.documentoRepository.save(documento);
   }
+
+  async remove(id: number): Promise<void> {
+    const documento = await this.documentoRepository.findOneBy({ id });
+    if (!documento) {
+      throw new NotFoundException(`Documento com ID ${id} não encontrado`);
+    }
+    await this.documentoRepository.remove(documento);
+  }
 }
