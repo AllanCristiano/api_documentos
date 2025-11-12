@@ -5,6 +5,8 @@ import { DocumentoModule } from './documento/documento.module';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { FilesModule } from './files/files.module';
 import { ConfigModule } from '@nestjs/config';
+import { ServeStaticModule } from '@nestjs/serve-static';
+import { join } from 'path';
 
 @Module({
   imports: [
@@ -18,6 +20,9 @@ import { ConfigModule } from '@nestjs/config';
       database: 'pma',
       autoLoadEntities: true,
       synchronize: true,
+    }),
+    ServeStaticModule.forRoot({
+      rootPath: join(__dirname, '..', 'public'),
     }),
     ConfigModule.forRoot({ isGlobal: true }),
     FilesModule,
