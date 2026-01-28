@@ -11,6 +11,7 @@ import {
   ParseIntPipe,
   Put,
   BadRequestException,
+  Delete, // <--- 1. Importado o Delete
 } from '@nestjs/common';
 import { Response } from 'express';
 import { DocumentoService } from './documento.service';
@@ -40,7 +41,6 @@ export class DocumentoController {
     @Param('filename') filename: string,
     @Res({ passthrough: true }) res: Response,
   ): StreamableFile {
-    // Obtém o stream e infos do arquivo
     type PdfStreamResult = {
       stream: import('stream').Readable;
       stat: { size: number };
@@ -57,7 +57,6 @@ export class DocumentoController {
 
     const { stream, stat } = fileData;
 
-    // Cabeçalhos para forçar o download
     res.set({
       'Content-Type': 'application/pdf',
       'Content-Disposition': `attachment; filename="${filename}"`,
@@ -67,7 +66,6 @@ export class DocumentoController {
     return new StreamableFile(stream);
   }
 
-  // Rota antiga para atualizar apenas a data de um documento pelo número
   @Patch('data/:numero')
   async atualizaData(
     @Param('numero') numero: string,
@@ -76,25 +74,30 @@ export class DocumentoController {
     return this.documentoService.atualizaData(numero, novaData);
   }
 
-  // --- NOVA ROTA: Atualizar apenas o Arquivo PDF ---
   @Patch(':id/file')
   async updateFile(
     @Param('id', ParseIntPipe) id: number,
     @Body('tempFilename') tempFilename: string,
   ) {
     if (!tempFilename) {
-      throw new BadRequestException('O nome do arquivo temporário (tempFilename) é obrigatório.');
+      throw new BadRequestException(
+        'O nome do arquivo temporário (tempFilename) é obrigatório.',
+      );
     }
-    // Chama o novo método criado no Service
     return this.documentoService.updateFile(id, tempFilename);
   }
 
   @Put(':id')
   update(
-    @Param('id', ParseIntPipe) id: number, // Usa o ID e converte para número
+    @Param('id', ParseIntPipe) id: number,
     @Body() updateDocumentoDto: Partial<CreateDocumentoDto>,
   ) {
-    // Chama o service para atualizar metadados (título, descrição, etc.)
     return this.documentoService.update(id, updateDocumentoDto);
+  }
+
+  // --- 2. NOVO MÉTODO DE DELETE ---
+  @Delete(':id')
+  remove(@Param('id', ParseIntPipe) id: number) {
+    return this.documentoService.remove(id);
   }
 }
