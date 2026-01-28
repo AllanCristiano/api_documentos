@@ -1,4 +1,4 @@
-import { Module, NestModule, MiddlewareConsumer, RequestMethod } from '@nestjs/common'; // <--- Adicione NestModule e MiddlewareConsumer
+import { Module } from '@nestjs/common';
 import { AppController } from './app.controller';
 import { AppService } from './app.service';
 import { DocumentoModule } from './documento/documento.module';
@@ -7,7 +7,6 @@ import { FilesModule } from './files/files.module';
 import { ConfigModule } from '@nestjs/config';
 import { ServeStaticModule } from '@nestjs/serve-static';
 import { join } from 'path';
-import { json, urlencoded } from 'express'; // <--- Importante
 
 @Module({
   imports: [
@@ -31,11 +30,4 @@ import { json, urlencoded } from 'express'; // <--- Importante
   controllers: [AppController],
   providers: [AppService],
 })
-export class AppModule implements NestModule { // <--- Implementa NestModule
-  configure(consumer: MiddlewareConsumer) {
-    // Aplica o limite GIGANTE para todas as rotas
-    consumer
-      .apply(json({ limit: '1000mb' }), urlencoded({ extended: true, limit: '1000mb' }))
-      .forRoutes({ path: '*', method: RequestMethod.ALL });
-  }
-}
+export class AppModule {}
