@@ -53,8 +53,14 @@ export class FilesService {
       );
     }
 
-    // Garante que o nome final no MinIO tenha a extensão .pdf
-    const finalFilenameWithExt = `${finalFilename}.pdf`;
+    // --- CORREÇÃO AQUI ---
+    // Verifica se já tem extensão .pdf. Se não tiver, adiciona.
+    // Se tiver, mantém como está. Isso evita o erro "arquivo.pdf.pdf"
+    let finalFilenameWithExt = finalFilename;
+    if (!finalFilenameWithExt.toLowerCase().endsWith('.pdf')) {
+      finalFilenameWithExt = `${finalFilenameWithExt}.pdf`;
+    }
+    // ---------------------
 
     try {
       // c. Chama o serviço do MinIO para realizar o upload
