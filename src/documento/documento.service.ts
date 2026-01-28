@@ -40,16 +40,14 @@ export class DocumentoService {
     }
 
     // 2. Separa o nome do arquivo temporário dos dados do documento
-    // 'documentoData' ficará com: type, number, title, description, date, fullText
     const { tempFilename, ...documentoData } = createDocumentoDto;
 
     // 3. Gera o nome final do arquivo para o MinIO/Storage
-    // Ex: "leis_ordinarias/8441-2026-01-02.pdf"
-    const sanitizedNumber = documentoData.number.replace(/[^\w\d-]/g, ''); // Remove barras e pontos
-    const finalFilename = `${documentoData.type}/${sanitizedNumber}-${documentoData.date}.pdf`;
+    // CORREÇÃO AQUI: Removido o ".pdf" final pois o FilesService já está adicionando
+    const sanitizedNumber = documentoData.number.replace(/[^\w\d-]/g, ''); 
+    const finalFilename = `${documentoData.type}/${sanitizedNumber}-${documentoData.date}`; 
 
     // 4. Move o arquivo físico (Do temp para o destino final)
-    // Isso retorna a URL ou o caminho relativo salvo
     let uploadResult;
     try {
       uploadResult = await this.filesService.moveTempFileToMinio(
@@ -63,11 +61,9 @@ export class DocumentoService {
     }
 
     // 5. Cria a entidade para salvar no Banco
-    // Nota: Certifique-se que sua Entity 'Documento' possui os campos 'title' e 'description'
-    // Se no banco for 'ementa', altere aqui: { ...documentoData, ementa: documentoData.description, ... }
     const novoDocumento = this.documentoRepository.create({
       ...documentoData,
-      url: uploadResult.url, // Salva o caminho/url retornado pelo serviço de arquivos
+      url: uploadResult.url, // Salva a URL retornada pelo MinIO (que agora estará correta)
     });
 
     // 6. Salva no Postgres
@@ -105,7 +101,7 @@ export class DocumentoService {
     return documento;
   }
 
-  // Método para streaming de arquivo local (caso não use MinIO para download direto)
+  // Método para streaming de arquivo local
   getPdfStream(filename: string) {
     const filePath = join(this.pdfDirectory, filename);
 
@@ -137,10 +133,6 @@ export class DocumentoService {
     id: number,
     updateDocumentoDto: Partial<CreateDocumentoDto>,
   ): Promise<Documento> {
-    // Se houver lógica de substituição de arquivo PDF na edição, 
-    // ela deve ser implementada aqui (verificar se tem tempFilename no DTO)
-    
-    // Remove tempFilename do update para não quebrar o preload
     // eslint-disable-next-line @typescript-eslint/no-unused-vars
     const { tempFilename, ...dadosParaAtualizar } = updateDocumentoDto as any;
 
@@ -169,22 +161,14 @@ export class DocumentoService {
     const tipoDoDocumento = documento.type;
     await this.documentoRepository.remove(documento);
 
-    // Opcional: Chamar this.filesService.deleteFile(documento.url) aqui
-
     await this._atualizarTimestamp(tipoDoDocumento);
   }
 
-  /**
-   * Atualiza a tabela 'Atualizacao' com a data/hora atual
-   */
   private async _atualizarTimestamp(tipoDocumento: string) {
     try {
       const agora = new Date();
-      
-      // Garante normalização (tudo minúsculo para bater com o switch)
       const tipoNormalizado = tipoDocumento.toLowerCase().trim();
 
-      // Busca o registro único (ID 1) ou cria
       let registro = await this.atualizacaoRepository.findOneBy({ id: 1 });
       if (!registro) {
         registro = this.atualizacaoRepository.create({ id: 1 });
@@ -192,13 +176,12 @@ export class DocumentoService {
 
       registro.date_total = agora;
 
-      // Mapeamento dos tipos conforme seu banco de dados
       switch (tipoNormalizado) {
         case 'portaria':
           registro.date_portaria = agora;
           break;
         case 'lei_ordinaria':
-        case 'lei ordinaria': // prevenção contra falta de underline
+        case 'lei ordinaria':
           registro.date_lei_ordinaria = agora;
           break;
         case 'lei_complementar':
