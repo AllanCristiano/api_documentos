@@ -2,6 +2,7 @@ import {
   Injectable,
   NotFoundException,
   ConflictException,
+  InternalServerErrorException,
 } from '@nestjs/common';
 import { CreateDocumentoDto } from './dto/create-documento.dto';
 import { InjectRepository } from '@nestjs/typeorm';
@@ -20,7 +21,6 @@ export class DocumentoService {
     @InjectRepository(Documento)
     private readonly documentoRepository: Repository<Documento>,
 
-    // <-- 2. REPOSITÓRIO INJETADO
     @InjectRepository(Atualizacao)
     private readonly atualizacaoRepository: Repository<Atualizacao>,
 
@@ -28,6 +28,7 @@ export class DocumentoService {
   ) {}
 
   async create(createDocumentoDto: CreateDocumentoDto): Promise<Documento> {
+    // 1. Verifica duplicidade
     const documentoExistente = await this.documentoRepository.findOneBy({
       number: createDocumentoDto.number,
     });
@@ -38,28 +39,41 @@ export class DocumentoService {
       );
     }
 
+    // 2. Separa o nome do arquivo temporário dos dados do documento
+    // 'documentoData' ficará com: type, number, title, description, date, fullText
     const { tempFilename, ...documentoData } = createDocumentoDto;
 
-    // Correção: Use 'documentoData.type' para definir o nome do arquivo
-    const finalFilename = `${documentoData.type}/${documentoData.number
-      .replace('_', '')
-      .replace('/', '')
-      .replace('.', '')}-${documentoData.date}`;
+    // 3. Gera o nome final do arquivo para o MinIO/Storage
+    // Ex: "leis_ordinarias/8441-2026-01-02.pdf"
+    const sanitizedNumber = documentoData.number.replace(/[^\w\d-]/g, ''); // Remove barras e pontos
+    const finalFilename = `${documentoData.type}/${sanitizedNumber}-${documentoData.date}.pdf`;
 
-    // Correção: Nome do método 'moveTempFileToMinio'
-    const uploadResult = await this.filesService.moveTempFileToMinio(
-      tempFilename,
-      finalFilename,
-    );
+    // 4. Move o arquivo físico (Do temp para o destino final)
+    // Isso retorna a URL ou o caminho relativo salvo
+    let uploadResult;
+    try {
+      uploadResult = await this.filesService.moveTempFileToMinio(
+        tempFilename,
+        finalFilename,
+      );
+    } catch (error) {
+      throw new InternalServerErrorException(
+        `Erro ao mover o arquivo PDF: ${error.message}`,
+      );
+    }
 
+    // 5. Cria a entidade para salvar no Banco
+    // Nota: Certifique-se que sua Entity 'Documento' possui os campos 'title' e 'description'
+    // Se no banco for 'ementa', altere aqui: { ...documentoData, ementa: documentoData.description, ... }
     const novoDocumento = this.documentoRepository.create({
       ...documentoData,
-      url: uploadResult.url,
+      url: uploadResult.url, // Salva o caminho/url retornado pelo serviço de arquivos
     });
 
+    // 6. Salva no Postgres
     const documentoSalvo = await this.documentoRepository.save(novoDocumento);
 
-    // <-- 3. CHAMA A FUNÇÃO DE ATUALIZAÇÃO
+    // 7. Atualiza o timestamp da dashboard
     await this._atualizarTimestamp(documentoSalvo.type);
 
     return documentoSalvo;
@@ -86,18 +100,19 @@ export class DocumentoService {
   async findOne(id: number): Promise<Documento> {
     const documento = await this.documentoRepository.findOneBy({ id });
     if (!documento) {
-      throw new Error(`Documento with id ${id} not found`);
+      throw new NotFoundException(`Documento com ID ${id} não encontrado`);
     }
     return documento;
   }
 
+  // Método para streaming de arquivo local (caso não use MinIO para download direto)
   getPdfStream(filename: string) {
     const filePath = join(this.pdfDirectory, filename);
 
     try {
       statSync(filePath);
     } catch {
-      throw new NotFoundException('Arquivo não encontrado');
+      throw new NotFoundException('Arquivo não encontrado no disco local');
     }
 
     const stream = createReadStream(filePath);
@@ -122,9 +137,16 @@ export class DocumentoService {
     id: number,
     updateDocumentoDto: Partial<CreateDocumentoDto>,
   ): Promise<Documento> {
+    // Se houver lógica de substituição de arquivo PDF na edição, 
+    // ela deve ser implementada aqui (verificar se tem tempFilename no DTO)
+    
+    // Remove tempFilename do update para não quebrar o preload
+    // eslint-disable-next-line @typescript-eslint/no-unused-vars
+    const { tempFilename, ...dadosParaAtualizar } = updateDocumentoDto as any;
+
     const documento = await this.documentoRepository.preload({
       id: id,
-      ...updateDocumentoDto,
+      ...dadosParaAtualizar,
     });
 
     if (!documento) {
@@ -133,7 +155,6 @@ export class DocumentoService {
 
     const documentoAtualizado = await this.documentoRepository.save(documento);
 
-    // <-- 4. CHAMA A FUNÇÃO DE ATUALIZAÇÃO
     await this._atualizarTimestamp(documentoAtualizado.type);
 
     return documentoAtualizado;
@@ -145,44 +166,43 @@ export class DocumentoService {
       throw new NotFoundException(`Documento com ID ${id} não encontrado`);
     }
     
-    const tipoDoDocumento = documento.type; // Salva o tipo antes de remover
+    const tipoDoDocumento = documento.type;
     await this.documentoRepository.remove(documento);
 
-    // <-- 5. CHAMA A FUNÇÃO DE ATUALIZAÇÃO
+    // Opcional: Chamar this.filesService.deleteFile(documento.url) aqui
+
     await this._atualizarTimestamp(tipoDoDocumento);
   }
 
-  // <-- 6. FUNÇÃO AUXILIAR PRIVADA
   /**
    * Atualiza a tabela 'Atualizacao' com a data/hora atual
-   * para o tipo de documento específico.
    */
   private async _atualizarTimestamp(tipoDocumento: string) {
     try {
       const agora = new Date();
+      
+      // Garante normalização (tudo minúsculo para bater com o switch)
+      const tipoNormalizado = tipoDocumento.toLowerCase().trim();
 
-      // Vamos assumir que você sempre terá apenas UM registro (id: 1)
+      // Busca o registro único (ID 1) ou cria
       let registro = await this.atualizacaoRepository.findOneBy({ id: 1 });
-
-      // Se for a primeira vez, cria o registro
       if (!registro) {
         registro = this.atualizacaoRepository.create({ id: 1 });
       }
 
-      // Atualiza a data geral
       registro.date_total = agora;
 
-      // Atualiza a data específica do tipo
-      // IMPORTANTE: Ajuste os 'cases' para os valores exatos de 'type'
-      // que você salva no banco (ex: 'portaria', 'lei_ordinaria', etc.)
-      switch (tipoDocumento) {
+      // Mapeamento dos tipos conforme seu banco de dados
+      switch (tipoNormalizado) {
         case 'portaria':
           registro.date_portaria = agora;
           break;
         case 'lei_ordinaria':
+        case 'lei ordinaria': // prevenção contra falta de underline
           registro.date_lei_ordinaria = agora;
           break;
         case 'lei_complementar':
+        case 'lei complementar':
           registro.date_lei_complementar = agora;
           break;
         case 'decreto':
@@ -192,20 +212,19 @@ export class DocumentoService {
           registro.date_emenda = agora;
           break;
         case 'lei_organica':
+        case 'lei organica':
           registro.date_lei_organica = agora;
           break;
         default:
           console.warn(
-            `[DocumentoService] Tipo de documento não mapeado para timestamp: ${tipoDocumento}`,
+            `[DocumentoService] Tipo desconhecido para timestamp: ${tipoDocumento}`,
           );
       }
 
       await this.atualizacaoRepository.save(registro);
 
     } catch (error) {
-      console.error('Erro ao atualizar o timestamp:', error);
-      // Decide se quer lançar o erro ou apenas logar
-      // throw new InternalServerErrorException('Falha ao atualizar timestamp');
+      console.error('Erro ao atualizar timestamp (não crítico):', error);
     }
   }
 }
