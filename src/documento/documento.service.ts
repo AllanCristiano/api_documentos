@@ -43,9 +43,9 @@ export class DocumentoService {
     const { tempFilename, ...documentoData } = createDocumentoDto;
 
     // 3. Gera o nome final do arquivo para o MinIO/Storage
-    // CORREÇÃO AQUI: Removido o ".pdf" final pois o FilesService já está adicionando
-    const sanitizedNumber = documentoData.number.replace(/[^\w\d-]/g, ''); 
-    const finalFilename = `${documentoData.type}/${sanitizedNumber}-${documentoData.date}`; 
+    // NOTA: Removido o ".pdf" manual do final, pois o FilesService adiciona a extensão
+    const sanitizedNumber = documentoData.number.replace(/[^\w\d-]/g, '');
+    const finalFilename = `${documentoData.type}/${sanitizedNumber}-${documentoData.date}`;
 
     // 4. Move o arquivo físico (Do temp para o destino final)
     let uploadResult;
@@ -63,7 +63,7 @@ export class DocumentoService {
     // 5. Cria a entidade para salvar no Banco
     const novoDocumento = this.documentoRepository.create({
       ...documentoData,
-      url: uploadResult.url, // Salva a URL retornada pelo MinIO (que agora estará correta)
+      url: uploadResult.url, // Salva a URL retornada pelo MinIO
     });
 
     // 6. Salva no Postgres
@@ -101,6 +101,47 @@ export class DocumentoService {
     return documento;
   }
 
+  /**
+   * NOVO MÉTODO: Atualiza apenas o arquivo PDF de um documento existente.
+   * O novo arquivo deve ter sido enviado previamente para a pasta temporária.
+   */
+  async updateFile(id: number, tempFilename: string): Promise<Documento> {
+    // 1. Busca o documento existente
+    const documento = await this.findOne(id);
+
+    // 2. Gera o nome final do arquivo (Mesma lógica do create para manter consistência)
+    // Isso garante que ele vai sobrescrever o arquivo correto no MinIO
+    const sanitizedNumber = documento.number.replace(/[^\w\d-]/g, '');
+
+    // IMPORTANTE: Sem adicionar .pdf manualmente aqui também
+    const finalFilename = `${documento.type}/${sanitizedNumber}-${documento.date}`;
+
+    // 3. Move o arquivo físico (Do temp para o destino final)
+    let uploadResult;
+    try {
+      // O MinIO irá sobrescrever o arquivo antigo automaticamente se o nome for igual
+      uploadResult = await this.filesService.moveTempFileToMinio(
+        tempFilename,
+        finalFilename,
+      );
+    } catch (error) {
+      throw new InternalServerErrorException(
+        `Erro ao substituir o arquivo PDF: ${error.message}`,
+      );
+    }
+
+    // 4. Atualiza a URL na entidade (caso o bucket ou caminho mude)
+    documento.url = uploadResult.url;
+
+    // 5. Salva no banco
+    const documentoSalvo = await this.documentoRepository.save(documento);
+
+    // 6. Atualiza o timestamp da dashboard
+    await this._atualizarTimestamp(documentoSalvo.type);
+
+    return documentoSalvo;
+  }
+
   // Método para streaming de arquivo local
   getPdfStream(filename: string) {
     const filePath = join(this.pdfDirectory, filename);
@@ -133,6 +174,7 @@ export class DocumentoService {
     id: number,
     updateDocumentoDto: Partial<CreateDocumentoDto>,
   ): Promise<Documento> {
+    // Remove tempFilename do update para não quebrar o preload
     // eslint-disable-next-line @typescript-eslint/no-unused-vars
     const { tempFilename, ...dadosParaAtualizar } = updateDocumentoDto as any;
 
@@ -157,7 +199,7 @@ export class DocumentoService {
     if (!documento) {
       throw new NotFoundException(`Documento com ID ${id} não encontrado`);
     }
-    
+
     const tipoDoDocumento = documento.type;
     await this.documentoRepository.remove(documento);
 
@@ -205,7 +247,6 @@ export class DocumentoService {
       }
 
       await this.atualizacaoRepository.save(registro);
-
     } catch (error) {
       console.error('Erro ao atualizar timestamp (não crítico):', error);
     }

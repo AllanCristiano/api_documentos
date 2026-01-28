@@ -10,6 +10,7 @@ import {
   NotFoundException,
   ParseIntPipe,
   Put,
+  BadRequestException,
 } from '@nestjs/common';
 import { Response } from 'express';
 import { DocumentoService } from './documento.service';
@@ -66,6 +67,7 @@ export class DocumentoController {
     return new StreamableFile(stream);
   }
 
+  // Rota antiga para atualizar apenas a data de um documento pelo número
   @Patch('data/:numero')
   async atualizaData(
     @Param('numero') numero: string,
@@ -74,12 +76,25 @@ export class DocumentoController {
     return this.documentoService.atualizaData(numero, novaData);
   }
 
+  // --- NOVA ROTA: Atualizar apenas o Arquivo PDF ---
+  @Patch(':id/file')
+  async updateFile(
+    @Param('id', ParseIntPipe) id: number,
+    @Body('tempFilename') tempFilename: string,
+  ) {
+    if (!tempFilename) {
+      throw new BadRequestException('O nome do arquivo temporário (tempFilename) é obrigatório.');
+    }
+    // Chama o novo método criado no Service
+    return this.documentoService.updateFile(id, tempFilename);
+  }
+
   @Put(':id')
   update(
     @Param('id', ParseIntPipe) id: number, // Usa o ID e converte para número
     @Body() updateDocumentoDto: Partial<CreateDocumentoDto>,
   ) {
-    // Chama o service, passando o ID
+    // Chama o service para atualizar metadados (título, descrição, etc.)
     return this.documentoService.update(id, updateDocumentoDto);
   }
 }
