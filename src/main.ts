@@ -7,10 +7,10 @@ async function bootstrap() {
   const app = await NestFactory.create(AppModule);
 
   // 2. Aumentar o limite para JSON (ajuste '50mb' conforme sua necessidade)
-  app.use(json({ limit: '100mb' }));
+  app.use(json({ limit: '1000mb' }));
 
   // 3. Aumentar o limite para URL Encoded (necessário para formulários)
-  app.use(urlencoded({ extended: true, limit: '100mb' }));
+  app.use(urlencoded({ extended: true, limit: '1000mb' }));
 
   // Permitir requisições vindas de qualquer origem
   app.enableCors({
