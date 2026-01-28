@@ -1,16 +1,13 @@
-// main.ts (NestJS)
 import { NestFactory } from '@nestjs/core';
 import { AppModule } from './app.module';
-import { json, urlencoded } from 'express';
+// Não precisamos mais importar json/urlencoded do express AQUI
 
 async function bootstrap() {
-  // AQUI ESTÁ O SEGREDO: { bodyParser: false }
-  // Isso impede o Nest de criar o limitador de 100kb padrão
+  // MANTENHA O bodyParser: false. Isso é CRUCIAL.
+  // Se tirar isso, o Nest cria o limite de 100kb antes do nosso módulo rodar.
   const app = await NestFactory.create(AppModule, { bodyParser: false });
 
-  // Agora suas configurações mandam
-  app.use(json({ limit: '1000mb' }));
-  app.use(urlencoded({ extended: true, limit: '1000mb' }));
+  // Removemos os app.use() manuais daqui porque agora o AppModule cuida disso.
 
   app.enableCors({
     origin: '*',
