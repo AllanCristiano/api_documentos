@@ -2,6 +2,7 @@ import {
   Injectable,
   BadRequestException,
   InternalServerErrorException,
+  ServiceUnavailableException, // Novo erro para quando a fila estiver cheia (opcional)
 } from '@nestjs/common';
 import { createWorker } from 'tesseract.js';
 import * as path from 'path';
@@ -9,6 +10,7 @@ import * as fs from 'fs';
 import { promises as fsPromises } from 'fs';
 import { randomBytes } from 'crypto';
 import { execSync } from 'child_process';
+import { Mutex } from 'async-mutex'; // Importação da trava
 
 const DOC_TYPES = {
   portaria: {
@@ -31,29 +33,37 @@ const DOC_TYPES = {
 
 @Injectable()
 export class OcrService {
+  // Criamos uma instância de Mutex que persistirá enquanto o serviço estiver vivo
+  private readonly mutex = new Mutex();
+
   async processPdf(file: Express.Multer.File, docType: keyof typeof DOC_TYPES) {
     if (!file) throw new BadRequestException('Arquivo não enviado.');
 
-    try {
-      console.log('Iniciando OCR...');
-      const fullText = await this.getTextFromPdf(file.buffer);
-      
-      console.log('Extraindo dados...');
-      const extractedData = this.extractInfo(fullText, docType);
+    // O código abaixo só será executado quando o Mutex estiver liberado
+    // Se outro processo estiver rodando, ele aguarda aqui (await)
+    return await this.mutex.runExclusive(async () => {
+      try {
+        console.log(`[${new Date().toLocaleTimeString()}] Iniciando OCR (Processo exclusivo)...`);
+        const fullText = await this.getTextFromPdf(file.buffer);
+        
+        console.log('Extraindo dados...');
+        const extractedData = this.extractInfo(fullText, docType);
 
-      const savedFilePath = await this.saveFile(file.buffer, docType, extractedData);
+        const savedFilePath = await this.saveFile(file.buffer, docType, extractedData);
 
-      return {
-        message: 'Processado!',
-        documentType: docType,
-        filePath: savedFilePath,
-        ...extractedData,
-        fullText,
-      };
-    } catch (error) {
-      console.error('Erro:', error);
-      throw new InternalServerErrorException('Erro ao processar o OCR.');
-    }
+        console.log(`[${new Date().toLocaleTimeString()}] Finalizado.`);
+        return {
+          message: 'Processado!',
+          documentType: docType,
+          filePath: savedFilePath,
+          ...extractedData,
+          fullText,
+        };
+      } catch (error) {
+        console.error('Erro no processamento exclusivo:', error);
+        throw new InternalServerErrorException('Erro ao processar o OCR.');
+      }
+    });
   }
 
   private async getTextFromPdf(pdfBuffer: Buffer): Promise<string> {
@@ -67,7 +77,11 @@ export class OcrService {
 
     try {
       execSync(`pdftoppm -jpeg -r 300 "${tempPdf}" "${path.join(jobDir, 'page')}"`);
-      const files = fs.readdirSync(jobDir).filter(f => f.endsWith('.jpg')).sort();
+      const files = fs.readdirSync(jobDir).filter(f => f.endsWith('.jpg')).sort((a, b) => {
+          const numA = parseInt(a.match(/\d+/)?.[0] || '0');
+          const numB = parseInt(b.match(/\d+/)?.[0] || '0');
+          return numA - numB;
+      });
       
       let text = '';
       for (const f of files) {
@@ -82,21 +96,18 @@ export class OcrService {
   }
 
   private extractInfo(text: string, docType: keyof typeof DOC_TYPES) {
-    // 1. Normaliza o texto: remove quebras de linha e espaços duplos
     const cleanText = text.replace(/\r?\n|\r/g, ' ').replace(/\s+/g, ' ');
-    const header = cleanText.substring(0, 2000); // Foca no início do documento
+    const header = cleanText.substring(0, 2000);
 
     const config = DOC_TYPES[docType];
     let numero_doc = 'Não encontrado';
     let data_doc = 'Data inválida';
 
-    // 2. Tenta capturar o NÚMERO
     const numMatch = config.pattern.exec(header);
     if (numMatch) {
-      numero_doc = numMatch[1].trim().replace(/[.]$/, ''); // Remove ponto final se houver
+      numero_doc = numMatch[1].trim().replace(/[.]$/, '');
     }
 
-    // 3. Tenta capturar a DATA (Procura perto do número ou no cabeçalho)
     const datePattern = /((?:\d{1,2}\s+de\s+\w+\s+de\s+\d{4})|(?:\d{2}[./]\d{2}[./]\d{4}))/i;
     const dateMatch = datePattern.exec(header);
     if (dateMatch) {
@@ -116,7 +127,6 @@ export class OcrService {
       julho: '07', agosto: '08', setembro: '09', outubro: '10', novembro: '11', dezembro: '12'
     };
 
-    // Formato extenso: 04 de Março de 2022
     let m = /(\d{1,2})\s+de\s+(\w+)\s+de\s+(\d{4})/i.exec(dateStr);
     if (m) {
       const mesNome = m[2].toLowerCase();
@@ -124,7 +134,6 @@ export class OcrService {
       if (mesNum) return `${m[3]}-${mesNum}-${m[1].padStart(2, '0')}`;
     }
 
-    // Formato numérico: 04/03/2022 ou 04.03.2022
     m = /(\d{2})[./](\d{2})[./](\d{4})/.exec(dateStr);
     if (m) return `${m[3]}-${m[2]}-${m[1]}`;
 
