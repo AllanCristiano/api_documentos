@@ -10,200 +10,140 @@ import { promises as fsPromises } from 'fs';
 import { randomBytes } from 'crypto';
 import { execSync } from 'child_process';
 
-// Tipos de documentos com Regex ultra-permissivas para falhas de OCR
+// Regex ultra-flexíveis para lidar com variações de OCR
 const DOC_TYPES = {
   portaria: {
-    // N[^\d]* -> Ignora qualquer símbolo (º, °, ., _) até encontrar o primeiro dígito
-    pattern:
-      /PORTARIA\s+N[^\d]*\s*([\d./]+)\s+DE\s+((?:\d{1,2}\s+de\s+\w+\s+de\s+\d{4})|(?:\d{2}[./]\d{2}[./]\d{4}))/i,
+    // Busca "PORTARIA", pula qualquer coisa até o número, pula qualquer coisa até "DE", captura a data
+    pattern: /PORTARIA\s+N[^\d]*\s*([\d./]+).*?DE\s+((?:\d{1,2}\s+de\s+\w+\s+de\s+\d{4})|(?:\d{2}[./]\d{2}[./]\d{4}))/i,
   },
   lei_ordinaria: {
-    pattern:
-      /LEI\s+N[^\d]*\s*([\d.,]+)\s+DE\s+(\d{1,2}\s+de\s+\w+\s+de\s+\d{4})/i,
+    pattern: /LEI\s+N[^\d]*\s*([\d.,]+).*?DE\s+(\d{1,2}\s+de\s+\w+\s+de\s+\d{4})/i,
   },
   lei_complementar: {
-    pattern:
-      /LEI\s+COMPLEMENTAR\s+N[^\d]*\s*([\d.,]+)\s+DE\s+(\d{1,2}\s+de\s+\w+\s+de\s+\d{4})/i,
+    pattern: /LEI\s+COMPLEMENTAR\s+N[^\d]*\s*([\d.,]+).*?DE\s+(\d{1,2}\s+de\s+\w+\s+de\s+\d{4})/i,
   },
   decreto: {
-    pattern:
-      /DECRETO\s+N[^\d]*\s*([\d./]+)\s+DE\s+((?:\d{1,2}\s+de\s+\w+\s+de\s+\d{4})|(?:\d{2}[./]\d{2}[./]\d{4}))/i,
+    // O .*? permite que existam quebras de linha ou textos entre o número e a data
+    pattern: /DECRETO\s+N[^\d]*\s*([\d./]+).*?DE\s+((?:\d{1,2}\s+de\s+\w+\s+de\s+\d{4})|(?:\d{2}[./]\d{2}[./]\d{4}))/i,
   },
 };
 
 @Injectable()
 export class OcrService {
   async processPdf(file: Express.Multer.File, docType: keyof typeof DOC_TYPES) {
-    if (!file) {
-      throw new BadRequestException('Nenhum arquivo enviado.');
-    }
-    if (!DOC_TYPES[docType]) {
-      throw new BadRequestException(`Tipo de documento inválido: ${docType}`);
-    }
+    if (!file) throw new BadRequestException('Nenhum arquivo enviado.');
+    if (!DOC_TYPES[docType]) throw new BadRequestException(`Tipo inválido: ${docType}`);
 
     try {
       console.log('Iniciando OCR...');
       const fullText = await this.getTextFromPdf(file.buffer);
-      console.log('OCR concluído. Extraindo informações...');
+      console.log('Extraindo informações...');
 
-      const extractedData = this.extractInfo(
-        fullText,
-        DOC_TYPES[docType].pattern,
-      );
-      
-      const savedFilePath = await this.saveFile(
-        file.buffer,
-        docType,
-        extractedData,
-      );
+      const extractedData = this.extractInfo(fullText, DOC_TYPES[docType].pattern);
+
+      const savedFilePath = await this.saveFile(file.buffer, docType, extractedData);
 
       return {
-        message: 'Arquivo processado e salvo com sucesso!',
+        message: 'Processado com sucesso!',
         documentType: docType,
         filePath: savedFilePath,
         ...extractedData,
         fullText,
       };
-    } catch (error: any) {
-      console.error('Erro no processamento do OCR:', error);
-      throw new InternalServerErrorException(
-        'Falha ao processar o arquivo PDF.',
-      );
+    } catch (error) {
+      console.error('Erro OCR:', error);
+      throw new InternalServerErrorException('Falha ao processar PDF.');
     }
   }
 
   private async saveFile(
-    originalFileBuffer: Buffer,
+    buffer: Buffer,
     docType: string,
-    extractedData: { numero_doc: string; data_doc: string },
+    data: { numero_doc: string; data_doc: string },
   ): Promise<string> {
-    let newFileName: string;
-
-    if (
-      extractedData.numero_doc === 'Não encontrado' ||
-      extractedData.data_doc === 'Data inválida'
-    ) {
-      const randomName = randomBytes(8).toString('hex');
-      const datePrefix = new Date().toISOString().split('T')[0];
-      newFileName = `${datePrefix}_${docType}_OCR-FALHOU_${randomName}.pdf`;
-      console.warn('OCR falhou na extração. Nome gerado:', newFileName);
-    } else {
-      const sanitizedDocNumber = extractedData.numero_doc.replace(/[/ ]/g, '-');
-      newFileName = `${sanitizedDocNumber.replace(/,/g, '')}_${extractedData.data_doc}.pdf`;
-    }
+    const isFallible = data.numero_doc === 'Não encontrado' || data.data_doc === 'Data inválida';
+    const fileName = isFallible
+      ? `${new Date().toISOString().split('T')[0]}_${docType}_FALHOU_${randomBytes(4).toString('hex')}.pdf`
+      : `${data.numero_doc.replace(/[/ ]/g, '-')}_${data.data_doc}.pdf`;
 
     const saveDir = path.join(__dirname, '..', '..', 'storage');
-    const filePath = path.join(saveDir, newFileName);
+    if (!fs.existsSync(saveDir)) fs.mkdirSync(saveDir, { recursive: true });
 
-    if (!fs.existsSync(saveDir)) {
-      fs.mkdirSync(saveDir, { recursive: true });
-    }
-
-    await fsPromises.writeFile(filePath, originalFileBuffer);
-    console.log(`Arquivo salvo em: ${filePath}`);
-
+    const filePath = path.join(saveDir, fileName);
+    await fsPromises.writeFile(filePath, buffer);
     return filePath;
   }
 
   private async getTextFromPdf(pdfBuffer: Buffer): Promise<string> {
     const worker = await createWorker('por');
-    let fullText = '';
-
-    const baseTempDir = path.join(__dirname, 'temp_pages');
-    if (!fs.existsSync(baseTempDir)) {
-      fs.mkdirSync(baseTempDir, { recursive: true });
-    }
-
-    const jobId = randomBytes(16).toString('hex');
-    const jobTempDir = path.join(baseTempDir, jobId);
-    fs.mkdirSync(jobTempDir);
-
-    const tempPdfPath = path.join(jobTempDir, `${jobId}.pdf`);
-    fs.writeFileSync(tempPdfPath, pdfBuffer);
+    const jobId = randomBytes(8).toString('hex');
+    const jobDir = path.join(__dirname, 'temp', jobId);
+    
+    fs.mkdirSync(jobDir, { recursive: true });
+    const tempPdf = path.join(jobDir, 'input.pdf');
+    fs.writeFileSync(tempPdf, pdfBuffer);
 
     try {
-      const outputPrefix = path.join(jobTempDir, 'page');
-      // Comando pdftoppm otimizado
-      const command = `pdftoppm -jpeg -r 300 "${tempPdfPath}" "${outputPrefix}"`;
-      execSync(command);
-
-      const imageFiles = fs
-        .readdirSync(jobTempDir)
-        .filter((f) => f.endsWith('.jpg'))
-        .sort((a, b) => {
-          const numA = parseInt(/page-(\d+)/.exec(a)?.[1] || '0');
-          const numB = parseInt(/page-(\d+)/.exec(b)?.[1] || '0');
-          return numA - numB;
-        });
-
-      for (const imageFile of imageFiles) {
-        const imagePath = path.join(jobTempDir, imageFile);
-        const { data: { text } } = await worker.recognize(imagePath);
-        const pageNumber = /page-(\d+)/.exec(imageFile)?.[1] || '?';
-        fullText += `--- Página ${pageNumber} ---\n${text}\n\n`;
+      // Gera imagens das páginas
+      execSync(`pdftoppm -jpeg -r 300 "${tempPdf}" "${path.join(jobDir, 'page')}"`);
+      
+      const files = fs.readdirSync(jobDir).filter(f => f.endsWith('.jpg')).sort();
+      let text = '';
+      
+      for (const f of files) {
+        const { data } = await worker.recognize(path.join(jobDir, f));
+        text += `\n${data.text}`;
       }
+      return text;
     } finally {
       await worker.terminate();
-      if (fs.existsSync(jobTempDir)) {
-        fs.rmSync(jobTempDir, { recursive: true, force: true });
-      }
+      fs.rmSync(jobDir, { recursive: true, force: true });
     }
-
-    return fullText;
   }
 
   private extractInfo(text: string, pattern: RegExp) {
-    // Normalização básica para remover espaços duplos e quebras de linha que atrapalham a regex
-    const cleanText = text.replace(/\s+/g, ' ');
-    const headerText = cleanText.substring(0, 4000);
-    const match = pattern.exec(headerText);
+    // Remove quebras de linha excessivas para a Regex não se perder
+    const singleLineText = text.replace(/\r?\n|\r/g, ' ').replace(/\s+/g, ' ');
+    
+    // Busca nos primeiros 3000 caracteres
+    const match = pattern.exec(singleLineText);
 
     if (!match) {
       return {
         numero_doc: 'Não encontrado',
-        data_doc: 'Não encontrada',
-        trecho_capturado: this.getSnippet(text),
+        data_doc: 'Data inválida',
+        trecho_capturado: text.substring(0, 500).trim() + '...',
       };
     }
 
-    const numero_doc = match[1]?.trim() || 'Não encontrado';
-    const rawDate = match[2]?.trim() || '';
-    const matchEndIndex = (match.index ?? 0) + (match[0]?.length ?? 0);
-
     return {
-      numero_doc,
-      data_doc: this.formatDate(rawDate),
-      trecho_capturado: this.getSnippet(text, matchEndIndex),
+      numero_doc: match[1].trim(),
+      data_doc: this.formatDate(match[2].trim()),
+      trecho_capturado: this.getSnippet(singleLineText, match.index),
     };
   }
 
-  private formatDate(dateText: string): string {
+  private formatDate(dateStr: string): string {
     const meses = {
-      janeiro: '01', fevereiro: '02', março: '03', abril: '04',
-      maio: '05', junho: '06', julho: '07', agosto: '08',
-      setembro: '09', outubro: '10', novembro: '11', dezembro: '12',
+      janeiro: '01', fevereiro: '02', março: '03', abril: '04', maio: '05', junho: '06',
+      julho: '07', agosto: '08', setembro: '09', outubro: '10', novembro: '11', dezembro: '12'
     };
 
-    let match = /(\d{1,2})\s+de\s+(\w+)\s+de\s+(\d{4})/i.exec(dateText);
-    if (match) {
-      const [, dia, mes, ano] = match;
-      const mesNome = mes.toLowerCase();
-      if (meses[mesNome]) {
-        return `${ano}-${meses[mesNome]}-${dia.padStart(2, '0')}`;
-      }
+    // Tenta formato "04 de março de 2022"
+    let m = /(\d{1,2})\s+de\s+(\w+)\s+de\s+(\d{4})/i.exec(dateStr);
+    if (m) {
+      const mesNum = meses[m[2].toLowerCase()];
+      if (mesNum) return `${m[3]}-${mesNum}-${m[1].padStart(2, '0')}`;
     }
 
-    match = /(\d{2})[./](\d{2})[./](\d{4})/.exec(dateText);
-    if (match) {
-      const [, dia, mes, ano] = match;
-      return `${ano}-${mes}-${dia}`;
-    }
+    // Tenta formato "04.03.2022" ou "04/03/2022"
+    m = /(\d{2})[./](\d{2})[./](\d{4})/.exec(dateStr);
+    if (m) return `${m[3]}-${m[2]}-${m[1]}`;
 
     return 'Data inválida';
   }
 
-  private getSnippet(text: string, startIndex = 0): string {
-    const content = text.substring(startIndex).trim();
-    return content.split(/\s+/).slice(0, 50).join(' ') + '...';
+  private getSnippet(text: string, index: number): string {
+    return text.substring(index, index + 500).trim() + '...';
   }
 }
