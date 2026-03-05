@@ -10,86 +10,66 @@ import { promises as fsPromises } from 'fs';
 import { randomBytes } from 'crypto';
 import { execSync } from 'child_process';
 
-// Regex ultra-flexíveis para lidar com variações de OCR
 const DOC_TYPES = {
   portaria: {
-    // Busca "PORTARIA", pula qualquer coisa até o número, pula qualquer coisa até "DE", captura a data
-    pattern: /PORTARIA\s+N[^\d]*\s*([\d./]+).*?DE\s+((?:\d{1,2}\s+de\s+\w+\s+de\s+\d{4})|(?:\d{2}[./]\d{2}[./]\d{4}))/i,
+    label: 'PORTARIA',
+    pattern: /PORTARIA\s+N[^\d]*\s*([\d./-]+)/i,
   },
   lei_ordinaria: {
-    pattern: /LEI\s+N[^\d]*\s*([\d.,]+).*?DE\s+(\d{1,2}\s+de\s+\w+\s+de\s+\d{4})/i,
+    label: 'LEI',
+    pattern: /LEI\s+N[^\d]*\s*([\d.,-]+)/i,
   },
   lei_complementar: {
-    pattern: /LEI\s+COMPLEMENTAR\s+N[^\d]*\s*([\d.,]+).*?DE\s+(\d{1,2}\s+de\s+\w+\s+de\s+\d{4})/i,
+    label: 'LEI\s+COMPLEMENTAR',
+    pattern: /LEI\s+COMPLEMENTAR\s+N[^\d]*\s*([\d.,-]+)/i,
   },
   decreto: {
-    // O .*? permite que existam quebras de linha ou textos entre o número e a data
-    pattern: /DECRETO\s+N[^\d]*\s*([\d./]+).*?DE\s+((?:\d{1,2}\s+de\s+\w+\s+de\s+\d{4})|(?:\d{2}[./]\d{2}[./]\d{4}))/i,
+    label: 'DECRETO',
+    pattern: /DECRETO\s+N[^\d]*\s*([\d./-]+)/i,
   },
 };
 
 @Injectable()
 export class OcrService {
   async processPdf(file: Express.Multer.File, docType: keyof typeof DOC_TYPES) {
-    if (!file) throw new BadRequestException('Nenhum arquivo enviado.');
-    if (!DOC_TYPES[docType]) throw new BadRequestException(`Tipo inválido: ${docType}`);
+    if (!file) throw new BadRequestException('Arquivo não enviado.');
 
     try {
       console.log('Iniciando OCR...');
       const fullText = await this.getTextFromPdf(file.buffer);
-      console.log('Extraindo informações...');
-
-      const extractedData = this.extractInfo(fullText, DOC_TYPES[docType].pattern);
+      
+      console.log('Extraindo dados...');
+      const extractedData = this.extractInfo(fullText, docType);
 
       const savedFilePath = await this.saveFile(file.buffer, docType, extractedData);
 
       return {
-        message: 'Processado com sucesso!',
+        message: 'Processado!',
         documentType: docType,
         filePath: savedFilePath,
         ...extractedData,
         fullText,
       };
     } catch (error) {
-      console.error('Erro OCR:', error);
-      throw new InternalServerErrorException('Falha ao processar PDF.');
+      console.error('Erro:', error);
+      throw new InternalServerErrorException('Erro ao processar o OCR.');
     }
-  }
-
-  private async saveFile(
-    buffer: Buffer,
-    docType: string,
-    data: { numero_doc: string; data_doc: string },
-  ): Promise<string> {
-    const isFallible = data.numero_doc === 'Não encontrado' || data.data_doc === 'Data inválida';
-    const fileName = isFallible
-      ? `${new Date().toISOString().split('T')[0]}_${docType}_FALHOU_${randomBytes(4).toString('hex')}.pdf`
-      : `${data.numero_doc.replace(/[/ ]/g, '-')}_${data.data_doc}.pdf`;
-
-    const saveDir = path.join(__dirname, '..', '..', 'storage');
-    if (!fs.existsSync(saveDir)) fs.mkdirSync(saveDir, { recursive: true });
-
-    const filePath = path.join(saveDir, fileName);
-    await fsPromises.writeFile(filePath, buffer);
-    return filePath;
   }
 
   private async getTextFromPdf(pdfBuffer: Buffer): Promise<string> {
     const worker = await createWorker('por');
     const jobId = randomBytes(8).toString('hex');
     const jobDir = path.join(__dirname, 'temp', jobId);
-    
     fs.mkdirSync(jobDir, { recursive: true });
+
     const tempPdf = path.join(jobDir, 'input.pdf');
     fs.writeFileSync(tempPdf, pdfBuffer);
 
     try {
-      // Gera imagens das páginas
       execSync(`pdftoppm -jpeg -r 300 "${tempPdf}" "${path.join(jobDir, 'page')}"`);
-      
       const files = fs.readdirSync(jobDir).filter(f => f.endsWith('.jpg')).sort();
-      let text = '';
       
+      let text = '';
       for (const f of files) {
         const { data } = await worker.recognize(path.join(jobDir, f));
         text += `\n${data.text}`;
@@ -101,42 +81,50 @@ export class OcrService {
     }
   }
 
-  private extractInfo(text: string, pattern: RegExp) {
-    // Remove quebras de linha excessivas para a Regex não se perder
-    const singleLineText = text.replace(/\r?\n|\r/g, ' ').replace(/\s+/g, ' ');
-    
-    // Busca nos primeiros 3000 caracteres
-    const match = pattern.exec(singleLineText);
+  private extractInfo(text: string, docType: keyof typeof DOC_TYPES) {
+    // 1. Normaliza o texto: remove quebras de linha e espaços duplos
+    const cleanText = text.replace(/\r?\n|\r/g, ' ').replace(/\s+/g, ' ');
+    const header = cleanText.substring(0, 2000); // Foca no início do documento
 
-    if (!match) {
-      return {
-        numero_doc: 'Não encontrado',
-        data_doc: 'Data inválida',
-        trecho_capturado: text.substring(0, 500).trim() + '...',
-      };
+    const config = DOC_TYPES[docType];
+    let numero_doc = 'Não encontrado';
+    let data_doc = 'Data inválida';
+
+    // 2. Tenta capturar o NÚMERO
+    const numMatch = config.pattern.exec(header);
+    if (numMatch) {
+      numero_doc = numMatch[1].trim().replace(/[.]$/, ''); // Remove ponto final se houver
+    }
+
+    // 3. Tenta capturar a DATA (Procura perto do número ou no cabeçalho)
+    const datePattern = /((?:\d{1,2}\s+de\s+\w+\s+de\s+\d{4})|(?:\d{2}[./]\d{2}[./]\d{4}))/i;
+    const dateMatch = datePattern.exec(header);
+    if (dateMatch) {
+      data_doc = this.formatDate(dateMatch[1]);
     }
 
     return {
-      numero_doc: match[1].trim(),
-      data_doc: this.formatDate(match[2].trim()),
-      trecho_capturado: this.getSnippet(singleLineText, match.index),
+      numero_doc,
+      data_doc,
+      trecho_capturado: this.getSnippet(cleanText, numMatch?.index || 0),
     };
   }
 
   private formatDate(dateStr: string): string {
     const meses = {
-      janeiro: '01', fevereiro: '02', março: '03', abril: '04', maio: '05', junho: '06',
+      janeiro: '01', fevereiro: '02', março: '03', marco: '03', abril: '04', maio: '05', junho: '06',
       julho: '07', agosto: '08', setembro: '09', outubro: '10', novembro: '11', dezembro: '12'
     };
 
-    // Tenta formato "04 de março de 2022"
+    // Formato extenso: 04 de Março de 2022
     let m = /(\d{1,2})\s+de\s+(\w+)\s+de\s+(\d{4})/i.exec(dateStr);
     if (m) {
-      const mesNum = meses[m[2].toLowerCase()];
+      const mesNome = m[2].toLowerCase();
+      const mesNum = meses[mesNome];
       if (mesNum) return `${m[3]}-${mesNum}-${m[1].padStart(2, '0')}`;
     }
 
-    // Tenta formato "04.03.2022" ou "04/03/2022"
+    // Formato numérico: 04/03/2022 ou 04.03.2022
     m = /(\d{2})[./](\d{2})[./](\d{4})/.exec(dateStr);
     if (m) return `${m[3]}-${m[2]}-${m[1]}`;
 
@@ -144,6 +132,20 @@ export class OcrService {
   }
 
   private getSnippet(text: string, index: number): string {
-    return text.substring(index, index + 500).trim() + '...';
+    return text.substring(index, index + 600).trim() + '...';
+  }
+
+  private async saveFile(buffer: Buffer, docType: string, data: any): Promise<string> {
+    const isError = data.numero_doc === 'Não encontrado';
+    const name = isError 
+      ? `FALHA_${docType}_${randomBytes(3).toString('hex')}.pdf`
+      : `${data.numero_doc.replace(/[./]/g, '-')}_${data.data_doc}.pdf`;
+
+    const dir = path.join(__dirname, '..', '..', 'storage');
+    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+    
+    const fullPath = path.join(dir, name);
+    await fsPromises.writeFile(fullPath, buffer);
+    return fullPath;
   }
 }
