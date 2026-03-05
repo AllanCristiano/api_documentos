@@ -10,23 +10,24 @@ import { promises as fsPromises } from 'fs';
 import { randomBytes } from 'crypto';
 import { execSync } from 'child_process';
 
-// Tipos de documentos e suas configurações de regex otimizadas
+// Tipos de documentos com Regex ultra-permissivas para falhas de OCR
 const DOC_TYPES = {
   portaria: {
+    // N[^\d]* -> Ignora qualquer símbolo (º, °, ., _) até encontrar o primeiro dígito
     pattern:
-      /PORTARIA\s+N[º°o.]?\s*([\d./]+)\s+DE\s+((?:\d{1,2}\s+de\s+\w+\s+de\s+\d{4})|(?:\d{2}[./]\d{2}[./]\d{4}))/i,
+      /PORTARIA\s+N[^\d]*\s*([\d./]+)\s+DE\s+((?:\d{1,2}\s+de\s+\w+\s+de\s+\d{4})|(?:\d{2}[./]\d{2}[./]\d{4}))/i,
   },
   lei_ordinaria: {
     pattern:
-      /LEI\s+N[º°o.]?\s*([\d.,]+)\s+DE\s+(\d{1,2}\s+de\s+\w+\s+de\s+\d{4})/i,
+      /LEI\s+N[^\d]*\s*([\d.,]+)\s+DE\s+(\d{1,2}\s+de\s+\w+\s+de\s+\d{4})/i,
   },
   lei_complementar: {
     pattern:
-      /LEI\s+COMPLEMENTAR\s+N[º°o.]?\s*([\d.,]+)\s+DE\s+(\d{1,2}\s+de\s+\w+\s+de\s+\d{4})/i,
+      /LEI\s+COMPLEMENTAR\s+N[^\d]*\s*([\d.,]+)\s+DE\s+(\d{1,2}\s+de\s+\w+\s+de\s+\d{4})/i,
   },
   decreto: {
     pattern:
-      /DECRETO\s+N[º°o.]?\s*([\d./]+)\s+DE\s+((?:\d{1,2}\s+de\s+\w+\s+de\s+\d{4})|(?:\d{2}[./]\d{2}[./]\d{4}))/i,
+      /DECRETO\s+N[^\d]*\s*([\d./]+)\s+DE\s+((?:\d{1,2}\s+de\s+\w+\s+de\s+\d{4})|(?:\d{2}[./]\d{2}[./]\d{4}))/i,
   },
 };
 
@@ -49,8 +50,7 @@ export class OcrService {
         fullText,
         DOC_TYPES[docType].pattern,
       );
-      console.log('Extração concluída.');
-
+      
       const savedFilePath = await this.saveFile(
         file.buffer,
         docType,
@@ -86,10 +86,7 @@ export class OcrService {
       const randomName = randomBytes(8).toString('hex');
       const datePrefix = new Date().toISOString().split('T')[0];
       newFileName = `${datePrefix}_${docType}_OCR-FALHOU_${randomName}.pdf`;
-      console.warn(
-        'Dados não encontrados no OCR. Salvando com nome de arquivo alternativo:',
-        newFileName,
-      );
+      console.warn('OCR falhou na extração. Nome gerado:', newFileName);
     } else {
       const sanitizedDocNumber = extractedData.numero_doc.replace(/[/ ]/g, '-');
       newFileName = `${sanitizedDocNumber.replace(/,/g, '')}_${extractedData.data_doc}.pdf`;
@@ -103,7 +100,7 @@ export class OcrService {
     }
 
     await fsPromises.writeFile(filePath, originalFileBuffer);
-    console.log(`Arquivo salvo com sucesso em: ${filePath}`);
+    console.log(`Arquivo salvo em: ${filePath}`);
 
     return filePath;
   }
@@ -126,16 +123,14 @@ export class OcrService {
 
     try {
       const outputPrefix = path.join(jobTempDir, 'page');
-      // Comando pdftoppm gera page-1.jpg, page-2.jpg...
+      // Comando pdftoppm otimizado
       const command = `pdftoppm -jpeg -r 300 "${tempPdfPath}" "${outputPrefix}"`;
-      console.log(`Executando comando: ${command}`);
       execSync(command);
 
       const imageFiles = fs
         .readdirSync(jobTempDir)
         .filter((f) => f.endsWith('.jpg'))
         .sort((a, b) => {
-          // Ordenação numérica para garantir page-2 antes de page-10
           const numA = parseInt(/page-(\d+)/.exec(a)?.[1] || '0');
           const numB = parseInt(/page-(\d+)/.exec(b)?.[1] || '0');
           return numA - numB;
@@ -143,11 +138,7 @@ export class OcrService {
 
       for (const imageFile of imageFiles) {
         const imagePath = path.join(jobTempDir, imageFile);
-        console.log(`Processando a imagem ${jobId}/${imageFile}...`);
-        const {
-          data: { text },
-        } = await worker.recognize(imagePath);
-        
+        const { data: { text } } = await worker.recognize(imagePath);
         const pageNumber = /page-(\d+)/.exec(imageFile)?.[1] || '?';
         fullText += `--- Página ${pageNumber} ---\n${text}\n\n`;
       }
@@ -162,8 +153,9 @@ export class OcrService {
   }
 
   private extractInfo(text: string, pattern: RegExp) {
-    // Aumentamos levemente a margem de busca para garantir captura em documentos longos
-    const headerText = text.substring(0, 4000);
+    // Normalização básica para remover espaços duplos e quebras de linha que atrapalham a regex
+    const cleanText = text.replace(/\s+/g, ' ');
+    const headerText = cleanText.substring(0, 4000);
     const match = pattern.exec(headerText);
 
     if (!match) {
@@ -192,7 +184,6 @@ export class OcrService {
       setembro: '09', outubro: '10', novembro: '11', dezembro: '12',
     };
 
-    // Formato: 04 de Março de 2022
     let match = /(\d{1,2})\s+de\s+(\w+)\s+de\s+(\d{4})/i.exec(dateText);
     if (match) {
       const [, dia, mes, ano] = match;
@@ -202,7 +193,6 @@ export class OcrService {
       }
     }
 
-    // Formato: 04.03.2022 ou 04/03/2022
     match = /(\d{2})[./](\d{2})[./](\d{4})/.exec(dateText);
     if (match) {
       const [, dia, mes, ano] = match;
