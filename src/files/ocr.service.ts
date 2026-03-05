@@ -118,28 +118,36 @@ export class OcrService {
     const worker = await createWorker('por');
     let fullText = '';
 
-    const tempDir = path.join(__dirname, 'temp_pages');
-    if (!fs.existsSync(tempDir)) fs.mkdirSync(tempDir);
+    // 1. Diretório base para as pastas temporárias
+    const baseTempDir = path.join(__dirname, 'temp_pages');
+    if (!fs.existsSync(baseTempDir)) {
+      fs.mkdirSync(baseTempDir, { recursive: true });
+    }
 
-    const tempPdfPath = path.join(
-      tempDir,
-      `${randomBytes(16).toString('hex')}.pdf`,
-    );
+    // 2. Criação de um diretório exclusivo para esta requisição/job
+    const jobId = randomBytes(16).toString('hex');
+    const jobTempDir = path.join(baseTempDir, jobId);
+    fs.mkdirSync(jobTempDir);
+
+    const tempPdfPath = path.join(jobTempDir, `${jobId}.pdf`);
     fs.writeFileSync(tempPdfPath, pdfBuffer);
 
     try {
-      const outputPrefix = path.join(tempDir, 'page');
+      // Arquivos de imagem serão gerados APENAS dentro da pasta do job atual
+      const outputPrefix = path.join(jobTempDir, 'page');
       const command = `pdftoppm -jpeg -r 300 "${tempPdfPath}" "${outputPrefix}"`;
       console.log(`Executando comando: ${command}`);
       execSync(command);
 
+      // Lê os arquivos da pasta do job atual e ordena para garantir a ordem das páginas
       const imageFiles = fs
-        .readdirSync(tempDir)
-        .filter((f) => f.endsWith('.jpg'));
+        .readdirSync(jobTempDir)
+        .filter((f) => f.endsWith('.jpg'))
+        .sort();
 
       for (const imageFile of imageFiles) {
-        const imagePath = path.join(tempDir, imageFile);
-        console.log(`Processando a imagem ${imageFile}...`);
+        const imagePath = path.join(jobTempDir, imageFile);
+        console.log(`Processando a imagem ${jobId}/${imageFile}...`);
         const {
           data: { text },
         } = await worker.recognize(imagePath);
@@ -149,8 +157,10 @@ export class OcrService {
       }
     } finally {
       await worker.terminate();
-      if (fs.existsSync(tempDir)) {
-        fs.rmSync(tempDir, { recursive: true, force: true });
+      
+      // Remove a pasta exclusiva desta requisição, preservando outras em andamento
+      if (fs.existsSync(jobTempDir)) {
+        fs.rmSync(jobTempDir, { recursive: true, force: true });
       }
     }
 
