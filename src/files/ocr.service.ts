@@ -2,7 +2,6 @@ import {
   Injectable,
   BadRequestException,
   InternalServerErrorException,
-  ServiceUnavailableException, // Novo erro para quando a fila estiver cheia (opcional)
 } from '@nestjs/common';
 import { createWorker } from 'tesseract.js';
 import * as path from 'path';
@@ -10,7 +9,7 @@ import * as fs from 'fs';
 import { promises as fsPromises } from 'fs';
 import { randomBytes } from 'crypto';
 import { execSync } from 'child_process';
-import { Mutex } from 'async-mutex'; // Importação da trava
+import { Mutex } from 'async-mutex';
 
 const DOC_TYPES = {
   portaria: {
@@ -33,25 +32,20 @@ const DOC_TYPES = {
 
 @Injectable()
 export class OcrService {
-  // Criamos uma instância de Mutex que persistirá enquanto o serviço estiver vivo
   private readonly mutex = new Mutex();
 
   async processPdf(file: Express.Multer.File, docType: keyof typeof DOC_TYPES) {
     if (!file) throw new BadRequestException('Arquivo não enviado.');
 
-    // O código abaixo só será executado quando o Mutex estiver liberado
-    // Se outro processo estiver rodando, ele aguarda aqui (await)
     return await this.mutex.runExclusive(async () => {
       try {
-        console.log(`[${new Date().toLocaleTimeString()}] Iniciando OCR (Processo exclusivo)...`);
+        console.log(`[${new Date().toLocaleTimeString()}] Processando: ${file.originalname}`);
         const fullText = await this.getTextFromPdf(file.buffer);
         
-        console.log('Extraindo dados...');
         const extractedData = this.extractInfo(fullText, docType);
 
         const savedFilePath = await this.saveFile(file.buffer, docType, extractedData);
 
-        console.log(`[${new Date().toLocaleTimeString()}] Finalizado.`);
         return {
           message: 'Processado!',
           documentType: docType,
@@ -60,7 +54,7 @@ export class OcrService {
           fullText,
         };
       } catch (error) {
-        console.error('Erro no processamento exclusivo:', error);
+        console.error('Erro:', error);
         throw new InternalServerErrorException('Erro ao processar o OCR.');
       }
     });
@@ -96,22 +90,33 @@ export class OcrService {
   }
 
   private extractInfo(text: string, docType: keyof typeof DOC_TYPES) {
-    const cleanText = text.replace(/\r?\n|\r/g, ' ').replace(/\s+/g, ' ');
-    const header = cleanText.substring(0, 2000);
-
+    // Normaliza para uma linha só para facilitar a busca de proximidade
+    const cleanText = text.replace(/\s+/g, ' ');
     const config = DOC_TYPES[docType];
+    
     let numero_doc = 'Não encontrado';
     let data_doc = 'Data inválida';
+    let searchStartIndex = 0;
 
-    const numMatch = config.pattern.exec(header);
+    // 1. Acha o número do documento
+    const numMatch = config.pattern.exec(cleanText);
     if (numMatch) {
       numero_doc = numMatch[1].trim().replace(/[.]$/, '');
+      // Define que a busca da data deve começar LOGO APÓS o número encontrado
+      searchStartIndex = numMatch.index + numMatch[0].length;
     }
 
+    // 2. Busca a data no trecho de 300 caracteres após o número (onde a data oficial costuma estar)
+    const contextForDate = cleanText.substring(searchStartIndex, searchStartIndex + 300);
     const datePattern = /((?:\d{1,2}\s+de\s+\w+\s+de\s+\d{4})|(?:\d{2}[./]\d{2}[./]\d{4}))/i;
-    const dateMatch = datePattern.exec(header);
+    
+    const dateMatch = datePattern.exec(contextForDate);
     if (dateMatch) {
       data_doc = this.formatDate(dateMatch[1]);
+    } else {
+      // Fallback: Se não achou logo após o número, tenta no cabeçalho inteiro
+      const fallbackMatch = datePattern.exec(cleanText.substring(0, 1500));
+      if (fallbackMatch) data_doc = this.formatDate(fallbackMatch[1]);
     }
 
     return {
@@ -129,8 +134,7 @@ export class OcrService {
 
     let m = /(\d{1,2})\s+de\s+(\w+)\s+de\s+(\d{4})/i.exec(dateStr);
     if (m) {
-      const mesNome = m[2].toLowerCase();
-      const mesNum = meses[mesNome];
+      const mesNum = meses[m[2].toLowerCase()];
       if (mesNum) return `${m[3]}-${mesNum}-${m[1].padStart(2, '0')}`;
     }
 
@@ -141,7 +145,8 @@ export class OcrService {
   }
 
   private getSnippet(text: string, index: number): string {
-    return text.substring(index, index + 600).trim() + '...';
+    // Pega o texto a partir do número para mostrar a ementa
+    return text.substring(index, index + 800).trim() + '...';
   }
 
   private async saveFile(buffer: Buffer, docType: string, data: any): Promise<string> {
