@@ -8,9 +8,9 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { Repository, Not, IsNull } from 'typeorm';
 import { InjectQueue } from '@nestjs/bullmq';
 import { Queue } from 'bullmq';
-import { join, parse } from 'path'; // <-- parse adicionado
+import { join, parse } from 'path';
 import { createReadStream, statSync } from 'fs';
-import { randomUUID } from 'crypto'; // <-- randomUUID adicionado
+import { randomUUID } from 'crypto';
 
 import { Documento, StatusOcr } from './entities/documento.entity';
 import { Atualizacao } from './entities/update.entity';
@@ -77,12 +77,23 @@ export class DocumentoService {
 
   /**
    * Passo 2: O Worker (Processador) chama este método quando termina de ler o PDF.
+   * 🔧 ATUALIZADO COM TRAVA DE SEGURANÇA PARA PRESERVAR DADOS ANTIGOS.
    */
   async atualizarDadosOcr(id: number, dadosOcr: Partial<Documento>): Promise<void> {
     const documento = await this.findOne(id);
 
+    // TRAVA DE SEGURANÇA:
+    // Se for um documento antigo (legado), ele já tem number, title e date. Mantemos os originais!
+    // Se for um documento novo (vazio), usamos o que o OCR extraiu.
     Object.assign(documento, {
-      ...dadosOcr,
+      number: documento.number ? documento.number : dadosOcr.number,
+      title: documento.title ? documento.title : dadosOcr.title,
+      date: documento.date ? documento.date : dadosOcr.date,
+      
+      // Estes dois nós SEMPRE atualizamos, pois é o objetivo do OCR
+      description: dadosOcr.description,
+      fullText: dadosOcr.fullText,
+      
       status_ocr: StatusOcr.CONCLUIDO,
     });
 
@@ -125,9 +136,6 @@ export class DocumentoService {
       { aprovado: false }, // Se o documento antigo estava como false (ou o default bateu false)
       { aprovado: true, status_ocr: StatusOcr.CONCLUIDO }
     );
-    
-    // Se quiser ser mais radical e aprovar a tabela INTEIRA de uma vez, 
-    // basta trocar o { aprovado: false } por {}
     
     return {
       message: 'Documentos antigos atualizados com sucesso!',
@@ -192,10 +200,6 @@ export class DocumentoService {
     }
 
     documento.url = uploadResult.url;
-    
-    // Opcional: Descomente abaixo se quiser que o arquivo novo passe pelo OCR novamente
-    // documento.status_ocr = StatusOcr.PENDENTE;
-    // await this.ocrQueue.add('processar-pdf', { documentoId: documento.id, tipo: documento.type, arquivoUrl: uploadResult.url });
 
     const documentoSalvo = await this.documentoRepository.save(documento);
     await this._atualizarTimestamp(documentoSalvo.type);
@@ -342,5 +346,4 @@ export class DocumentoService {
       dica: 'Acompanhe os logs do PM2 no servidor para ver o OCR trabalhando!'
     };
   }
-  
 }
