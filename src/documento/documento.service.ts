@@ -4,14 +4,18 @@ import {
   ConflictException,
   InternalServerErrorException,
 } from '@nestjs/common';
-import { CreateDocumentoDto } from './dto/create-documento.dto';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Documento } from './entities/documento.entity';
-import { Repository } from 'typeorm';
-import { join } from 'path';
+import { Repository, Not, IsNull } from 'typeorm';
+import { InjectQueue } from '@nestjs/bullmq';
+import { Queue } from 'bullmq';
+import { join, parse } from 'path'; // <-- parse adicionado
 import { createReadStream, statSync } from 'fs';
-import { FilesService } from 'src/files/files.service';
+import { randomUUID } from 'crypto'; // <-- randomUUID adicionado
+
+import { Documento, StatusOcr } from './entities/documento.entity';
 import { Atualizacao } from './entities/update.entity';
+import { FilesService } from 'src/files/files.service';
+import { CreateDocumentoDto } from './dto/create-documento.dto';
 
 @Injectable()
 export class DocumentoService {
@@ -25,29 +29,21 @@ export class DocumentoService {
     private readonly atualizacaoRepository: Repository<Atualizacao>,
 
     private readonly filesService: FilesService,
+
+    // Injeção da fila do BullMQ
+    @InjectQueue('ocr-queue') private ocrQueue: Queue,
   ) {}
 
-  async create(createDocumentoDto: CreateDocumentoDto): Promise<Documento> {
-    // 1. Verifica duplicidade
-    const documentoExistente = await this.documentoRepository.findOneBy({
-      number: createDocumentoDto.number,
-    });
+  // =========================================================================
+  // 1. NOVO FLUXO ASSÍNCRONO (FILA E APROVAÇÃO)
+  // =========================================================================
 
-    if (documentoExistente) {
-      throw new ConflictException(
-        `Documento com número ${createDocumentoDto.number} já existe`,
-      );
-    }
+  /**
+   * Passo 1: Recebe o arquivo em lote, salva no banco como PENDENTE e envia pra fila.
+   */
+  async createPendente(type: string, tempFilename: string): Promise<Documento> {
+    const finalFilename = `${type}/pendente-${Date.now()}-${tempFilename}`;
 
-    // 2. Separa o nome do arquivo temporário dos dados do documento
-    const { tempFilename, ...documentoData } = createDocumentoDto;
-
-    // 3. Gera o nome final do arquivo para o MinIO/Storage
-    // NOTA: Removido o ".pdf" manual do final, pois o FilesService adiciona a extensão
-    const sanitizedNumber = documentoData.number.replace(/[^\w\d-]/g, '');
-    const finalFilename = `${documentoData.type}/${sanitizedNumber}-${documentoData.date}`;
-
-    // 4. Move o arquivo físico (Do temp para o destino final)
     let uploadResult;
     try {
       uploadResult = await this.filesService.moveTempFileToMinio(
@@ -56,24 +52,87 @@ export class DocumentoService {
       );
     } catch (error) {
       throw new InternalServerErrorException(
-        `Erro ao mover o arquivo PDF: ${error.message}`,
+        `Erro ao salvar o arquivo: ${error.message}`,
       );
     }
 
-    // 5. Cria a entidade para salvar no Banco
     const novoDocumento = this.documentoRepository.create({
-      ...documentoData,
-      url: uploadResult.url, // Salva a URL retornada pelo MinIO
+      type: type,
+      url: uploadResult.url,
+      status_ocr: StatusOcr.PENDENTE,
+      aprovado: false,
     });
 
-    // 6. Salva no Postgres
     const documentoSalvo = await this.documentoRepository.save(novoDocumento);
 
-    // 7. Atualiza o timestamp da dashboard
-    await this._atualizarTimestamp(documentoSalvo.type);
+    // Envia o trabalho para a fila (O worker vai pegar isso aqui)
+    await this.ocrQueue.add('processar-pdf', {
+      documentoId: documentoSalvo.id,
+      tipo: type,
+      arquivoUrl: uploadResult.url, 
+    });
 
     return documentoSalvo;
   }
+
+  /**
+   * Passo 2: O Worker (Processador) chama este método quando termina de ler o PDF.
+   */
+  async atualizarDadosOcr(id: number, dadosOcr: Partial<Documento>): Promise<void> {
+    const documento = await this.findOne(id);
+
+    Object.assign(documento, {
+      ...dadosOcr,
+      status_ocr: StatusOcr.CONCLUIDO,
+    });
+
+    await this.documentoRepository.save(documento);
+  }
+
+  /**
+   * Passo 3: O usuário revisa os dados na interface e aprova a publicação.
+   */
+  async aprovarDocumento(id: number, dadosAprovados: Partial<Documento>): Promise<Documento> {
+    const documento = await this.findOne(id);
+
+    // Se o usuário editou o número durante a aprovação, checamos conflitos
+    if (dadosAprovados.number && dadosAprovados.number !== documento.number) {
+      const conflito = await this.documentoRepository.findOneBy({ number: dadosAprovados.number });
+      if (conflito) {
+        throw new ConflictException(`Documento com número ${dadosAprovados.number} já existe.`);
+      }
+    }
+
+    Object.assign(documento, {
+      ...dadosAprovados,
+      aprovado: true,
+    });
+
+    const docSalvo = await this.documentoRepository.save(documento);
+    
+    // Atualiza a dashboard apenas quando o documento é oficialmente aprovado
+    await this._atualizarTimestamp(docSalvo.type);
+
+    return docSalvo;
+  }
+
+  /**
+   * Rota temporária para consertar os documentos antigos do banco.
+   */
+  async aprovarDocumentosLegados() {
+    const result = await this.documentoRepository.update(
+      { fullText: Not(IsNull()) },
+      { aprovado: true, status_ocr: StatusOcr.CONCLUIDO }
+    );
+    return {
+      message: 'Documentos antigos atualizados com sucesso!',
+      linhasAfetadas: result.affected,
+    };
+  }
+
+  // =========================================================================
+  // 2. MÉTODOS ORIGINAIS DE BUSCA E MANUTENÇÃO
+  // =========================================================================
 
   async findAll(): Promise<Documento[]> {
     return await this.documentoRepository.find({
@@ -86,9 +145,7 @@ export class DocumentoService {
   async findByNumber(number: string): Promise<Documento> {
     const documento = await this.documentoRepository.findOneBy({ number });
     if (!documento) {
-      throw new NotFoundException(
-        `Documento com número ${number} não encontrado`,
-      );
+      throw new NotFoundException(`Documento com número ${number} não encontrado`);
     }
     return documento;
   }
@@ -102,24 +159,23 @@ export class DocumentoService {
   }
 
   /**
-   * NOVO MÉTODO: Atualiza apenas o arquivo PDF de um documento existente.
-   * O novo arquivo deve ter sido enviado previamente para a pasta temporária.
+   * Atualiza apenas o arquivo PDF.
+   * Agora utiliza nomeOriginal + UUID para evitar sobrescrita destrutiva no MinIO.
    */
-  async updateFile(id: number, tempFilename: string): Promise<Documento> {
-    // 1. Busca o documento existente
+  async updateFile(id: number, tempFilename: string, originalName?: string): Promise<Documento> {
     const documento = await this.findOne(id);
 
-    // 2. Gera o nome final do arquivo (Mesma lógica do create para manter consistência)
-    // Isso garante que ele vai sobrescrever o arquivo correto no MinIO
-    const sanitizedNumber = documento.number.replace(/[^\w\d-]/g, '');
+    // Limpa o nome original ou usa o ID como fallback
+    const baseName = originalName 
+      ? parse(originalName).name.replace(/[^\w\d-]/g, '') 
+      : `doc-${documento.id}`;
 
-    // IMPORTANTE: Sem adicionar .pdf manualmente aqui também
-    const finalFilename = `${documento.type}/${sanitizedNumber}-${documento.date}`;
+    // Gera o nome final com UUID
+    const uuid = randomUUID();
+    const finalFilename = `${documento.type}/${baseName}-${uuid}.pdf`;
 
-    // 3. Move o arquivo físico (Do temp para o destino final)
     let uploadResult;
     try {
-      // O MinIO irá sobrescrever o arquivo antigo automaticamente se o nome for igual
       uploadResult = await this.filesService.moveTempFileToMinio(
         tempFilename,
         finalFilename,
@@ -130,19 +186,18 @@ export class DocumentoService {
       );
     }
 
-    // 4. Atualiza a URL na entidade (caso o bucket ou caminho mude)
     documento.url = uploadResult.url;
+    
+    // Opcional: Descomente abaixo se quiser que o arquivo novo passe pelo OCR novamente
+    // documento.status_ocr = StatusOcr.PENDENTE;
+    // await this.ocrQueue.add('processar-pdf', { documentoId: documento.id, tipo: documento.type, arquivoUrl: uploadResult.url });
 
-    // 5. Salva no banco
     const documentoSalvo = await this.documentoRepository.save(documento);
-
-    // 6. Atualiza o timestamp da dashboard
     await this._atualizarTimestamp(documentoSalvo.type);
 
     return documentoSalvo;
   }
 
-  // Método para streaming de arquivo local
   getPdfStream(filename: string) {
     const filePath = join(this.pdfDirectory, filename);
 
@@ -162,19 +217,13 @@ export class DocumentoService {
       number: numero,
     });
     if (!documento) {
-      throw new NotFoundException(
-        `Documento com número ${numero} não encontrado`,
-      );
+      throw new NotFoundException(`Documento com número ${numero} não encontrado`);
     }
     documento.date = novaData;
     return this.documentoRepository.save(documento);
   }
 
-  async update(
-    id: number,
-    updateDocumentoDto: Partial<CreateDocumentoDto>,
-  ): Promise<Documento> {
-    // Remove tempFilename do update para não quebrar o preload
+  async update(id: number, updateDocumentoDto: Partial<CreateDocumentoDto>): Promise<Documento> {
     // eslint-disable-next-line @typescript-eslint/no-unused-vars
     const { tempFilename, ...dadosParaAtualizar } = updateDocumentoDto as any;
 
@@ -188,7 +237,6 @@ export class DocumentoService {
     }
 
     const documentoAtualizado = await this.documentoRepository.save(documento);
-
     await this._atualizarTimestamp(documentoAtualizado.type);
 
     return documentoAtualizado;
@@ -207,6 +255,8 @@ export class DocumentoService {
   }
 
   private async _atualizarTimestamp(tipoDocumento: string) {
+    if (!tipoDocumento) return;
+
     try {
       const agora = new Date();
       const tipoNormalizado = tipoDocumento.toLowerCase().trim();

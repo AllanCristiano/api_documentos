@@ -10,10 +10,24 @@ services:
       POSTGRES_PASSWORD: senha123
       POSTGRES_DB: pma
     ports:
-      - "5432:5432"
+      - "5433:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
     networks: # Adicionado à mesma rede para comunicação
+      - app_network
+
+  # ==========================================
+  # NOVO: Serviço do Redis (Para a Fila do BullMQ)
+  # ==========================================
+  redis:
+    image: redis:alpine
+    container_name: redis_queue
+    restart: always
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    networks:
       - app_network
 
   # Serviço do MinIO (armazenamento de objetos)
@@ -57,6 +71,7 @@ services:
 volumes:
   postgres_data:
   minio_data:
+  redis_data: # NOVO: Volume para persistir a fila do Redis
 
 # Definição das redes
 networks:

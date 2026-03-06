@@ -11,20 +11,63 @@ import {
   ParseIntPipe,
   Put,
   BadRequestException,
-  Delete, // <--- 1. Importado o Delete
+  Delete,
+  HttpCode,
+  HttpStatus,
 } from '@nestjs/common';
 import { Response } from 'express';
 import { DocumentoService } from './documento.service';
-import { CreateDocumentoDto } from './dto/create-documento.dto';
+import { AprovarDocumentoDto, CreateDocumentoDto } from './dto/create-documento.dto';
 
 @Controller('documento')
 export class DocumentoController {
   constructor(private readonly documentoService: DocumentoService) {}
 
+  // =========================================================================
+  // 1. ROTAS DO NOVO FLUXO ASSÍNCRONO
+  // =========================================================================
+
+  /**
+   * Passo 1: Recebe o tipo e o arquivo temporário, cria como PENDENTE e joga na fila.
+   * Retorna 202 (Accepted) porque o processamento real (OCR) será feito em background.
+   */
   @Post()
-  create(@Body() createDocumentoDto: CreateDocumentoDto) {
-    return this.documentoService.create(createDocumentoDto);
+  @HttpCode(HttpStatus.ACCEPTED)
+  createPendente(
+    @Body('type') type: string,
+    @Body('tempFilename') tempFilename: string,
+  ) {
+    if (!type || !tempFilename) {
+      throw new BadRequestException(
+        'Os campos "type" e "tempFilename" são obrigatórios para iniciar o processamento.',
+      );
+    }
+    return this.documentoService.createPendente(type, tempFilename);
   }
+
+  /**
+   * Passo 3: Rota para o usuário aprovar o documento após revisar os dados do OCR.
+   */
+  @Patch(':id/aprovar')
+  aprovarDocumento(
+    @Param('id', ParseIntPipe) id: number,
+    @Body() dadosAprovados: AprovarDocumentoDto,
+  ) {
+    return this.documentoService.aprovarDocumento(id, dadosAprovados);
+  }
+
+  /**
+   * Rota Temporária: Atualiza os documentos antigos para aprovado=true.
+   * Acesse /documento/fix/legados uma vez no navegador e depois pode apagar este método.
+   */
+  @Get('fix/legados')
+  aprovarLegados() {
+    return this.documentoService.aprovarDocumentosLegados();
+  }
+
+  // =========================================================================
+  // 2. ROTAS ORIGINAIS (Busca, Edição, Deleção e Download)
+  // =========================================================================
 
   @Get()
   findAll() {
@@ -74,28 +117,31 @@ export class DocumentoController {
     return this.documentoService.atualizaData(numero, novaData);
   }
 
+  /**
+   * Atualizado para receber também o originalName do frontend
+   */
   @Patch(':id/file')
   async updateFile(
     @Param('id', ParseIntPipe) id: number,
     @Body('tempFilename') tempFilename: string,
+    @Body('originalName') originalName?: string, // <-- NOVO
   ) {
     if (!tempFilename) {
       throw new BadRequestException(
         'O nome do arquivo temporário (tempFilename) é obrigatório.',
       );
     }
-    return this.documentoService.updateFile(id, tempFilename);
+    return this.documentoService.updateFile(id, tempFilename, originalName);
   }
 
   @Put(':id')
   update(
     @Param('id', ParseIntPipe) id: number,
-    @Body() updateDocumentoDto: Partial<CreateDocumentoDto>,
+    @Body() updateDocumentoDto: Partial<AprovarDocumentoDto>, // <--- AQUI
   ) {
-    return this.documentoService.update(id, updateDocumentoDto);
+    return this.documentoService.update(id, updateDocumentoDto as any);
   }
 
-  // --- 2. NOVO MÉTODO DE DELETE ---
   @Delete(':id')
   remove(@Param('id', ParseIntPipe) id: number) {
     return this.documentoService.remove(id);
