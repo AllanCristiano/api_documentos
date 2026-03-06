@@ -1,19 +1,20 @@
 import { Processor, WorkerHost } from '@nestjs/bullmq';
 import { Job } from 'bullmq';
-import { Logger } from '@nestjs/common';
+import { Logger, Inject, forwardRef } from '@nestjs/common';
 import { DocumentoService } from './documento.service';
 import { StatusOcr } from './entities/documento.entity';
-import { OcrService } from '../files/ocr.service'; // Ajuste o path conforme sua estrutura
-import { FilesService } from '../files/files.service'; // Ajuste o path conforme sua estrutura
+import { OcrService } from '../files/ocr.service';
+import { FilesService } from '../files/files.service';
 
 @Processor('ocr-queue', {
-  concurrency: 1, // Um por vez para preservar CPU/RAM
-  lockDuration: 300000, // 5 minutos
+  concurrency: 1, 
+  lockDuration: 300000, // 5 minutos de trava para processos longos
 })
 export class OcrProcessor extends WorkerHost {
   private readonly logger = new Logger(OcrProcessor.name);
 
   constructor(
+    @Inject(forwardRef(() => DocumentoService))
     private readonly documentoService: DocumentoService,
     private readonly ocrService: OcrService,
     private readonly filesService: FilesService,
@@ -27,67 +28,69 @@ export class OcrProcessor extends WorkerHost {
     this.logger.log(`[JOB ${job.id}] 🚀 Iniciando OCR do documento ID: ${documentoId}`);
 
     try {
-      // 1. Marcar como processando no banco
+      // 1. Atualizar status para processando
       await this.documentoService.atualizarDadosOcr(documentoId, { 
         status_ocr: StatusOcr.PROCESSANDO 
       });
 
-      // 2. Extrair a Key correta para o MinIO
-      // Se a URL for http://localhost:9000/pma/PORTARIA/arquivo.pdf, 
-      // precisamos apenas de "PORTARIA/arquivo.pdf"
-      // Aqui usamos uma lógica mais genérica para pegar tudo após o nome do bucket (pma)
-      const bucketName = 'pma'; // Nome do seu bucket
-      const objectKey = arquivoUrl.includes(`${bucketName}/`) 
-        ? arquivoUrl.split(`${bucketName}/`)[1] 
-        : arquivoUrl;
+      // 2. Extração da Object Key (Caminho relativo no MinIO)
+      // O erro XMinioInvalidObjectName ocorre porque o MinIO não aceita "http://..." como nome de objeto.
+      // Precisamos apenas do que vem após o nome do bucket.
+      const bucketName = 'atos-normativos'; 
+      const marker = `${bucketName}/`;
+      
+      let objectKey = arquivoUrl;
+      if (arquivoUrl.includes(marker)) {
+        objectKey = arquivoUrl.split(marker)[1];
+      }
 
-      this.logger.debug(`[JOB ${job.id}] Baixando arquivo do MinIO com a key: ${objectKey}`);
+      this.logger.debug(`[JOB ${job.id}] 🎯 Key extraída: ${objectKey}`);
 
-      // 3. Download do arquivo
+      // 3. Download do Buffer do MinIO
       const fileBuffer = await this.filesService.downloadFileFromMinio(objectKey);
 
       if (!fileBuffer || fileBuffer.length === 0) {
-        throw new Error('O buffer do arquivo baixado está vazio.');
+        throw new Error(`Falha ao obter conteúdo do arquivo para a key: ${objectKey}`);
       }
 
-      // 4. Preparar objeto para o OcrService (Mock de Multer File)
+      // 4. Mock do Multer File para o OcrService
       const fakeMulterFile = {
         buffer: fileBuffer,
         originalname: objectKey.split('/').pop(),
         mimetype: 'application/pdf',
       } as Express.Multer.File;
 
-      // 5. Normalizar tipo para o mapeamento do OcrService
-      const serviceDocType = tipo.toLowerCase();
+      // 5. Normalizar o tipo de documento para o switch do OCR
+      const serviceDocType = tipo.toLowerCase() as any;
 
-      // 6. Executar o OCR pesado (pdftoppm + Tesseract)
-      this.logger.log(`[JOB ${job.id}] ⏳ Executando Tesseract nas imagens do PDF...`);
-      const resultadoOcr = await this.ocrService.processPdf(fakeMulterFile, serviceDocType as any);
+      // 6. Processamento OCR (Tesseract + pdftoppm)
+      this.logger.log(`[JOB ${job.id}] ⏳ Extraindo texto das imagens...`);
+      const resultadoOcr = await this.ocrService.processPdf(fakeMulterFile, serviceDocType);
 
-      // 7. Persistir tudo no Banco de Dados
-      this.logger.log(`[JOB ${job.id}] ✅ OCR concluído. Salvando ${resultadoOcr.fullText.length} caracteres de texto.`);
+      // 7. Persistência Final no Banco de Dados
+      this.logger.log(`[JOB ${job.id}] ✅ Sucesso! Texto extraído: ${resultadoOcr.fullText?.length || 0} caracteres.`);
       
       await this.documentoService.atualizarDadosOcr(documentoId, {
         number: resultadoOcr.numero_doc,
         date: resultadoOcr.data_doc,
-        title: `${tipo} ${resultadoOcr.numero_doc || ''}`.trim(), 
+        title: `${tipo} ${resultadoOcr.numero_doc}`.trim(),
         description: resultadoOcr.trecho_capturado,
-        fullText: resultadoOcr.fullText, // <--- Aqui o texto completo entra no banco
+        fullText: resultadoOcr.fullText,
         status_ocr: StatusOcr.CONCLUIDO,
       });
 
       return resultadoOcr;
 
     } catch (error) {
-      this.logger.error(`[JOB ${job.id}] ❌ Falha no processamento: ${error.message}`);
+      this.logger.error(`[JOB ${job.id}] ❌ Erro: ${error.message}`);
       
-      // Atualiza o banco com o erro para dar feedback ao usuário
+      // Notifica o erro no banco de dados para a UI do usuário
       await this.documentoService.atualizarDadosOcr(documentoId, { 
         status_ocr: StatusOcr.ERRO,
         mensagem_erro: error.message 
       });
 
-      throw error; // Lança para o BullMQ registrar a falha no Redis
+      throw error; // Mantém o erro no BullMQ para controle de falhas
     }
   }
 }

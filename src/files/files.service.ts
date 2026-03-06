@@ -1,89 +1,91 @@
-// src/files/files.service.ts
-
-import { Injectable, NotFoundException } from '@nestjs/common';
+import { Injectable, NotFoundException, Logger } from '@nestjs/common';
 import { MinioService } from './minio.service';
 import * as fs from 'fs';
 import * as path from 'path';
 
 @Injectable()
 export class FilesService {
-  // 1. Injete o MinioService no construtor para poder usá-lo
+  private readonly logger = new Logger(FilesService.name);
+
+  // 1. Injete o MinioService no construtor
   constructor(private readonly minioService: MinioService) {}
 
   /**
-   * ESTE É O NOVO MÉTODO PARA BAIXAR O ARQUIVO.
-   * Ele recebe o nome de um objeto (arquivo) e solicita ao MinioService
-   * que o baixe do bucket.
-   *
-   * @param objectName O nome do arquivo a ser baixado do MinIO.
-   * @returns Uma Promise que resolve para um Buffer com os dados do arquivo.
+   * Faz o download de um arquivo do MinIO e retorna como Buffer.
+   * Útil para o processamento de OCR em segundo plano.
+   * * @param objectName O nome (Key) do objeto no MinIO (ex: 'LEI_ORDINARIA/arquivo.pdf').
    */
   async downloadFileFromMinio(objectName: string): Promise<Buffer> {
     try {
-      // Simplesmente repassa a chamada para o método correspondente no MinioService
-      const fileBuffer = await this.minioService.downloadFile(objectName);
+      // Limpeza básica: remove barras iniciais se existirem para evitar erro de objeto inválido
+      const cleanKey = objectName.startsWith('/') ? objectName.substring(1) : objectName;
+
+      this.logger.debug(`Solicitando download do objeto: ${cleanKey}`);
+      
+      const fileBuffer = await this.minioService.downloadFile(cleanKey);
+      
+      if (!fileBuffer || fileBuffer.length === 0) {
+        throw new Error('O conteúdo do arquivo retornado está vazio.');
+      }
+
       return fileBuffer;
     } catch (error) {
-      // Se o MinioService lançar um erro (ex: arquivo não encontrado),
-      // o erro é capturado aqui. Podemos relançá-lo ou tratá-lo.
-      // Lançar NotFoundException é uma boa prática em serviços NestJS.
-      console.error(`Falha ao buscar o arquivo ${objectName} do MinIO.`, error);
+      this.logger.error(`Falha ao buscar o arquivo "${objectName}" do MinIO.`, error.stack);
+      
       throw new NotFoundException(
-        `Arquivo "${objectName}" não encontrado no armazenamento.`,
+        `Arquivo "${objectName}" não encontrado no armazenamento permanente.`,
       );
     }
   }
 
   /**
-   * ESTE É O NOVO MÉTODO.
-   * arquivo já salvo temporariamente para o armazenamento permanente no MinIO.
-   *
-   * @param tempFilename O nome do arquivo na pasta ./uploads (ex: '1678890000000-123456789.pdf').
-   * @param finalFilename O nome que o arquivo deverá ter no MinIO (ex: 'Relatorio-Mensal').
-   * @returns O resultado do upload, incluindo a URL final do arquivo no MinIO.
+   * Move o arquivo da pasta temporária ./uploads para o MinIO.
+   * * @param tempFilename Nome do arquivo gerado pelo Multer no disco.
+   * @param finalFilename Nome amigável/final desejado (ex: 'DECRETO/123-2024').
    */
   async moveTempFileToMinio(tempFilename: string, finalFilename: string) {
-    // Constrói o caminho completo para o arquivo temporário
+    // Localização do arquivo no servidor
     const tempFilePath = path.join('./uploads', tempFilename);
 
-    // a. Verifica se o arquivo temporário realmente existe no disco
+    // a. Verifica existência física
     if (!fs.existsSync(tempFilePath)) {
       throw new NotFoundException(
-        `Arquivo temporário ${tempFilename} não encontrado. Faça o upload novamente.`,
+        `Arquivo temporário ${tempFilename} não encontrado. O upload inicial pode ter falhado.`,
       );
     }
 
-    // --- CORREÇÃO AQUI ---
-    // Verifica se já tem extensão .pdf. Se não tiver, adiciona.
-    // Se tiver, mantém como está. Isso evita o erro "arquivo.pdf.pdf"
+    // b. Normaliza a extensão .pdf
     let finalFilenameWithExt = finalFilename;
     if (!finalFilenameWithExt.toLowerCase().endsWith('.pdf')) {
       finalFilenameWithExt = `${finalFilenameWithExt}.pdf`;
     }
-    // ---------------------
 
     try {
-      // c. Chama o serviço do MinIO para realizar o upload
+      this.logger.log(`Movendo arquivo temporário para MinIO: ${finalFilenameWithExt}`);
+
+      // c. Executa o upload para o MinIO (via MinioService)
       const result = await this.minioService.uploadFile(
         tempFilePath,
         finalFilenameWithExt,
       );
 
-      // d. (Passo Crítico) APENAS APÓS o upload bem-sucedido, remove o arquivo temporário
-      fs.unlinkSync(tempFilePath);
+      // d. Limpeza do disco local: APENAS após confirmação de sucesso do MinIO
+      if (fs.existsSync(tempFilePath)) {
+        fs.unlinkSync(tempFilePath);
+        this.logger.debug(`Arquivo temporário ${tempFilename} removido do disco.`);
+      }
 
-      // Retorna uma resposta de sucesso com a URL do MinIO
       return {
         message: 'Arquivo finalizado e enviado para o MinIO com sucesso!',
-        ...result,
+        url: result.url,
+        key: finalFilenameWithExt, // Retornamos a key para facilitar o uso no Job de OCR
       };
     } catch (error) {
-      // e. Se o upload para o MinIO falhar, o erro é capturado e relançado.
-      // O arquivo temporário NÃO é excluído, permitindo uma nova tentativa.
-      console.error(
-        `Falha ao mover o arquivo ${tempFilename} para o MinIO.`,
+      this.logger.error(
+        `Erro no processo de movimentação para o MinIO: ${tempFilename}`,
         error,
       );
+      // Não removemos o arquivo temporário em caso de erro para permitir retry manual se necessário
       throw error;
     }
   }
