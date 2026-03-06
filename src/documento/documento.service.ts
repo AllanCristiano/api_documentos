@@ -120,10 +120,15 @@ export class DocumentoService {
    * Rota temporária para consertar os documentos antigos do banco.
    */
   async aprovarDocumentosLegados() {
+    // Agora ele vai pegar todos os documentos que estão pendentes ou que não foram aprovados
     const result = await this.documentoRepository.update(
-      { fullText: Not(IsNull()) },
+      { aprovado: false }, // Se o documento antigo estava como false (ou o default bateu false)
       { aprovado: true, status_ocr: StatusOcr.CONCLUIDO }
     );
+    
+    // Se quiser ser mais radical e aprovar a tabela INTEIRA de uma vez, 
+    // basta trocar o { aprovado: false } por {}
+    
     return {
       message: 'Documentos antigos atualizados com sucesso!',
       linhasAfetadas: result.affected,
@@ -301,4 +306,6 @@ export class DocumentoService {
       console.error('Erro ao atualizar timestamp (não crítico):', error);
     }
   }
+
+  
 }
