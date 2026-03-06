@@ -6,7 +6,11 @@ import { StatusOcr } from './entities/documento.entity';
 import { OcrService } from 'src/files/ocr.service';
 import { FilesService } from 'src/files/files.service';
 
-@Processor('ocr-queue')
+// 🔧 CONFIGURAÇÃO DO WORKER ATUALIZADA
+@Processor('ocr-queue', {
+  concurrency: 1, // Processa 1 arquivo por vez para não estourar a RAM do servidor
+  lockDuration: 300000, // 5 minutos de trava. Tempo de sobra pro Tesseract mastigar arquivos gigantes.
+})
 export class OcrProcessor extends WorkerHost {
   private readonly logger = new Logger(OcrProcessor.name);
 
