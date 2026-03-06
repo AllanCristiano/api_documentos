@@ -307,5 +307,40 @@ export class DocumentoService {
     }
   }
 
+  // =========================================================================
+  // ROTA DE EMERGÊNCIA: Reprocessar Legados
+  // =========================================================================
+  async reprocessarLegadosFila() {
+    // Pega todos os documentos que não têm texto, mas que possuem uma URL válida
+    const documentos = await this.documentoRepository.find({
+      where: { 
+        fullText: IsNull(),
+        url: Not(IsNull()) // Garante que tem arquivo para o OCR ler
+      }
+    });
+
+    const documentosValidos = documentos.filter(doc => doc.url.trim() !== '');
+
+    for (const doc of documentosValidos) {
+      // Muda o status para PROCESSANDO (para o frontend saber que está rolando)
+      await this.documentoRepository.update(doc.id, { 
+        status_ocr: StatusOcr.PROCESSANDO,
+        aprovado: false 
+      });
+
+      // Joga na fila do BullMQ!
+      await this.ocrQueue.add('processar-pdf', {
+        documentoId: doc.id,
+        tipo: doc.type,
+        arquivoUrl: doc.url,
+      });
+    }
+
+    return {
+      message: 'Reprocessamento em lote iniciado com sucesso!',
+      quantidadeEnviadaParaFila: documentosValidos.length,
+      dica: 'Acompanhe os logs do PM2 no servidor para ver o OCR trabalhando!'
+    };
+  }
   
 }

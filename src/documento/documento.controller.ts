@@ -146,4 +146,9 @@ export class DocumentoController {
   remove(@Param('id', ParseIntPipe) id: number) {
     return this.documentoService.remove(id);
   }
+
+  @Get('fix/reprocessar-tudo')
+  reprocessarTodosLegados() {
+    return this.documentoService.reprocessarLegadosFila();
+  }
 }
