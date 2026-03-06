@@ -18,7 +18,7 @@ import { BullModule } from '@nestjs/bullmq';
     TypeOrmModule.forRoot({
       type: 'postgres',
       host: 'localhost',
-      port: 5433,
+      port: 5432,
       username: 'usuario',
       password: 'senha123',
       database: 'pma',
