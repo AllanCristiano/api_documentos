@@ -65,7 +65,7 @@ services:
       exit 0;
       "
 
-  # ==========================================
+# ==========================================
   # NOVO: Serviço de Backup Automático Semanal
   # ==========================================
   backup_semanal:
@@ -77,29 +77,28 @@ services:
     networks:
       - app_network
     volumes:
-      - ./backups_semanais:/backups # Cria a pasta de backups no servidor
-      - minio_data:/minio_data:ro # Lê a pasta do MinIO com segurança
+      - ./backups_semanais:/backups
+      - minio_data:/minio_data:ro
     environment:
       - PGPASSWORD=senha123
-    entrypoint: >
-      /bin/sh -c "
-      apk add --no-cache postgresql-client tar tzdata &&
-      cp /usr/share/zoneinfo/America/Maceio /etc/localtime &&
-      cat << 'EOF' > /backup.sh
-      #!/bin/sh
-      DATA=\$$(date +%Y-%m-%d_%H-%M)
-      echo \"Iniciando backup em: \$$DATA\"
-      pg_dump -h db -U usuario -d pma > /backups/db_\$$DATA.sql
-      tar -czf /backups/minio_\$$DATA.tar.gz -C /minio_data .
-      echo \"Backup finalizado com sucesso!\"
-      EOF
-      chmod +x /backup.sh &&
-      echo '0 6 * * 1 /backup.sh' > /etc/crontabs/root &&
-      echo 'Executando backup imediato da primeira vez...' &&
-      /backup.sh &&
-      echo 'Cron iniciado! Próximo backup programado para Segunda-feira às 06:00.' &&
-      crond -f -d 8
-      "
+    entrypoint:
+      - /bin/sh
+      - -c
+      - |
+        apk add --no-cache postgresql-client tar tzdata
+        cp /usr/share/zoneinfo/America/Maceio /etc/localtime
+        echo '#!/bin/sh' > /backup.sh
+        echo 'DATA=$$(date +%Y-%m-%d_%H-%M)' >> /backup.sh
+        echo 'echo "Iniciando backup em: $$DATA"' >> /backup.sh
+        echo 'pg_dump -h db -U usuario -d pma > /backups/db_$$DATA.sql' >> /backup.sh
+        echo 'tar -czf /backups/minio_$$DATA.tar.gz -C /minio_data .' >> /backup.sh
+        echo 'echo "Backup finalizado com sucesso!"' >> /backup.sh
+        chmod +x /backup.sh
+        echo '0 6 * * 1 /backup.sh' > /etc/crontabs/root
+        echo 'Executando backup imediato da primeira vez...'
+        /backup.sh
+        echo 'Cron iniciado! Próximo backup programado para Segunda-feira às 06:00.'
+        exec crond -f -d 8
 
 # Definição dos volumes
 volumes:
