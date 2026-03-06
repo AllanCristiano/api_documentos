@@ -3,13 +3,12 @@ import { Job } from 'bullmq';
 import { Logger } from '@nestjs/common';
 import { DocumentoService } from './documento.service';
 import { StatusOcr } from './entities/documento.entity';
-import { OcrService } from 'src/files/ocr.service';
-import { FilesService } from 'src/files/files.service';
+import { OcrService } from '../files/ocr.service'; // Ajuste o path conforme sua estrutura
+import { FilesService } from '../files/files.service'; // Ajuste o path conforme sua estrutura
 
-// 🔧 CONFIGURAÇÃO DO WORKER ATUALIZADA
 @Processor('ocr-queue', {
-  concurrency: 1, // Processa 1 arquivo por vez para não estourar a RAM do servidor
-  lockDuration: 300000, // 5 minutos de trava. Tempo de sobra pro Tesseract mastigar arquivos gigantes.
+  concurrency: 1, // Um por vez para preservar CPU/RAM
+  lockDuration: 300000, // 5 minutos
 })
 export class OcrProcessor extends WorkerHost {
   private readonly logger = new Logger(OcrProcessor.name);
@@ -25,61 +24,70 @@ export class OcrProcessor extends WorkerHost {
   async process(job: Job<any, any, string>): Promise<any> {
     const { documentoId, tipo, arquivoUrl } = job.data;
     
-    this.logger.log(`[JOB ${job.id}] Iniciando OCR do documento ID: ${documentoId}`);
+    this.logger.log(`[JOB ${job.id}] 🚀 Iniciando OCR do documento ID: ${documentoId}`);
 
     try {
-      // 1. Atualiza o status no banco para PROCESSANDO
+      // 1. Marcar como processando no banco
       await this.documentoService.atualizarDadosOcr(documentoId, { 
         status_ocr: StatusOcr.PROCESSANDO 
       });
 
-      // -------------------------------------------------------------------------
-      // 🔧 CORREÇÃO AQUI: Extrair a "Key" (caminho) da URL completa.
-      // O MinIO espera algo como "PORTARIA/arquivo.pdf", não a URL "http://..."
-      // -------------------------------------------------------------------------
-      const urlParts = arquivoUrl.split('atos-normativos/');
-      const objectKey = urlParts.length > 1 ? urlParts[1] : arquivoUrl;
+      // 2. Extrair a Key correta para o MinIO
+      // Se a URL for http://localhost:9000/pma/PORTARIA/arquivo.pdf, 
+      // precisamos apenas de "PORTARIA/arquivo.pdf"
+      // Aqui usamos uma lógica mais genérica para pegar tudo após o nome do bucket (pma)
+      const bucketName = 'pma'; // Nome do seu bucket
+      const objectKey = arquivoUrl.includes(`${bucketName}/`) 
+        ? arquivoUrl.split(`${bucketName}/`)[1] 
+        : arquivoUrl;
 
-      // 2. Baixa o PDF usando a Key correta
+      this.logger.debug(`[JOB ${job.id}] Baixando arquivo do MinIO com a key: ${objectKey}`);
+
+      // 3. Download do arquivo
       const fileBuffer = await this.filesService.downloadFileFromMinio(objectKey);
 
-      // 3. Monta um arquivo no formato que o seu OcrService espera (Multer)
+      if (!fileBuffer || fileBuffer.length === 0) {
+        throw new Error('O buffer do arquivo baixado está vazio.');
+      }
+
+      // 4. Preparar objeto para o OcrService (Mock de Multer File)
       const fakeMulterFile = {
         buffer: fileBuffer,
         originalname: objectKey.split('/').pop(),
         mimetype: 'application/pdf',
       } as Express.Multer.File;
 
-      // 4. Normaliza o tipo de documento
+      // 5. Normalizar tipo para o mapeamento do OcrService
       const serviceDocType = tipo.toLowerCase();
 
-      // 5. Executa o processamento OCR
+      // 6. Executar o OCR pesado (pdftoppm + Tesseract)
+      this.logger.log(`[JOB ${job.id}] ⏳ Executando Tesseract nas imagens do PDF...`);
       const resultadoOcr = await this.ocrService.processPdf(fakeMulterFile, serviceDocType as any);
 
-      // 6. Atualiza o banco com os dados extraídos
+      // 7. Persistir tudo no Banco de Dados
+      this.logger.log(`[JOB ${job.id}] ✅ OCR concluído. Salvando ${resultadoOcr.fullText.length} caracteres de texto.`);
+      
       await this.documentoService.atualizarDadosOcr(documentoId, {
         number: resultadoOcr.numero_doc,
         date: resultadoOcr.data_doc,
         title: `${tipo} ${resultadoOcr.numero_doc || ''}`.trim(), 
         description: resultadoOcr.trecho_capturado,
-        fullText: resultadoOcr.fullText,
+        fullText: resultadoOcr.fullText, // <--- Aqui o texto completo entra no banco
         status_ocr: StatusOcr.CONCLUIDO,
       });
 
-      this.logger.log(`[JOB ${job.id}] OCR Finalizado com sucesso para ID: ${documentoId}`);
-      
       return resultadoOcr;
 
     } catch (error) {
-      this.logger.error(`[JOB ${job.id}] Falha brutal no OCR para ID: ${documentoId}`, error.stack);
+      this.logger.error(`[JOB ${job.id}] ❌ Falha no processamento: ${error.message}`);
       
-      // Salva a mensagem de erro no banco para feedback na UI
+      // Atualiza o banco com o erro para dar feedback ao usuário
       await this.documentoService.atualizarDadosOcr(documentoId, { 
         status_ocr: StatusOcr.ERRO,
         mensagem_erro: error.message 
       });
 
-      throw error; 
+      throw error; // Lança para o BullMQ registrar a falha no Redis
     }
   }
 }
