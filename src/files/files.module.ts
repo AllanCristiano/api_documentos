@@ -1,29 +1,31 @@
-import { Module } from '@nestjs/common';
+import { Module, forwardRef } from '@nestjs/common';
 import { FilesService } from './files.service';
 import { FilesController } from './files.controller';
 import { OcrService } from './ocr.service';
 import { MinioService } from './minio.service';
-import { BullModule } from '@nestjs/bullmq'; // 👈 Importe o BullModule
-import { OcrProcessor } from 'src/documento/ocr.processor';
-import { DocumentoModule } from '../documento/documento.module'; // 👈 Precisa para o DocumentoService
+import { BullModule } from '@nestjs/bullmq';
+import { OcrProcessor } from '../documento/ocr.processor'; // Verifique se o caminho está correto
+import { DocumentoModule } from '../documento/documento.module';
 
 @Module({
   imports: [
-    // 2. REGISTRO ESPECÍFICO (Cria a fila 'ocr-queue')
+    // 1. Registro da fila para este módulo
     BullModule.registerQueue({
       name: 'ocr-queue',
     }),
-    // Importamos o DocumentoModule para que o Processor possa 
-    // usar o DocumentoService e salvar no banco
-    DocumentoModule, 
+
+    // 2. CORREÇÃO: Usando forwardRef para evitar dependência circular com DocumentoModule
+    // Isso resolve o erro de "index [1] of the FilesModule imports array is undefined"
+    forwardRef(() => DocumentoModule),
   ],
   controllers: [FilesController],
   providers: [
-    FilesService, 
-    OcrService, 
-    MinioService, 
-    OcrProcessor 
+    FilesService,
+    OcrService,
+    MinioService,
+    OcrProcessor, // O Worker/Processor precisa ser um provider
   ],
-  exports: [FilesService, OcrService],
+  // Exportamos os serviços para que o DocumentoModule possa usá-los se necessário
+  exports: [FilesService, OcrService, BullModule],
 })
 export class FilesModule {}
