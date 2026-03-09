@@ -44,12 +44,15 @@ export class OcrService {
         this.logger.log(`Iniciando OCR: ${file.originalname}`);
         
         // 1. Extração do texto via OCR
-        const fullText = await this.getTextFromPdf(file.buffer);
+        const rawText = await this.getTextFromPdf(file.buffer);
         
-        // 2. Extração de metadados (Regex)
+        // 2. Limpeza básica para o texto completo salvo no banco
+        const fullText = this.cleanExtractedText(rawText);
+        
+        // 3. Extração de metadados (Número, Data e Ementa)
         const extractedData = this.extractInfo(fullText, docType);
 
-        // 3. Salvamento do arquivo físico no storage local
+        // 4. Salvamento do arquivo físico no storage local
         const savedFilePath = await this.saveFile(file.buffer, docType, extractedData);
 
         return {
@@ -57,7 +60,7 @@ export class OcrService {
           documentType: docType,
           filePath: savedFilePath,
           ...extractedData,
-          fullText, // Aqui retorna o texto completo lido do papel
+          fullText, // O texto completo limpo vai para o campo 'fullText'
         };
       } catch (error) {
         this.logger.error('Falha no processamento OCR:', error.message);
@@ -78,8 +81,7 @@ export class OcrService {
     fs.writeFileSync(tempPdf, pdfBuffer);
 
     try {
-      // Converte PDF para Imagem (200 DPI é o ideal para velocidade/precisão em papel)
-      // Certifique-se que o poppler-utils (pdftoppm) está instalado no SO
+      // Converte PDF para Imagem
       execSync(`pdftoppm -jpeg -r 200 "${tempPdf}" "${path.join(jobDir, 'page')}"`);
 
       const files = fs.readdirSync(jobDir)
@@ -97,10 +99,9 @@ export class OcrService {
       for (const f of files) {
         const imagePath = path.join(jobDir, f);
         const { data } = await worker.recognize(imagePath);
-        combinedText += `\n${data.text}`;
+        combinedText += `\n\n${data.text}`; // Pula linha entre páginas
       }
 
-      // Verificação de segurança: se o OCR falhar e não ler nada
       if (!combinedText.trim()) {
         this.logger.warn('Aviso: OCR finalizou mas o texto extraído está vazio.');
       }
@@ -114,22 +115,31 @@ export class OcrService {
     }
   }
 
+  // Limpa o texto das sujeiras de quebra de linha do PDF
+  private cleanExtractedText(text: string): string {
+    return text
+      .replace(/\n{3,}/g, '\n\n') // Múltiplas quebras viram apenas parágrafos
+      .replace(/(\w+)-\n(\w+)/g, '$1$2') // Remove hifens de fim de linha
+      .replace(/(?<!\n)\n(?!\n)/g, ' ') // Quebras de linha únicas viram espaço
+      .replace(/ {2,}/g, ' ') // Remove espaços múltiplos
+      .trim();
+  }
+
   private extractInfo(text: string, docType: keyof typeof DOC_TYPES) {
-    // Limpeza para facilitar o Regex (remove quebras de linha mas mantém o texto íntegro)
-    const cleanText = text.replace(/\r?\n|\r/g, ' ').replace(/\s+/g, ' ');
+    const cleanText = text.replace(/\s+/g, ' '); // Uma única linha para facilitar os Regex
     const config = DOC_TYPES[docType];
     
     let numero_doc = 'Não encontrado';
     let data_doc = 'Data inválida';
+    let trecho_capturado = 'Ementa não encontrada.'; // Fallback
 
-    // 1. Busca Número (mais flexível para erros de OCR em papel)
+    // 1. Busca Número
     const numMatch = config.pattern.exec(cleanText);
     if (numMatch) {
-      // Pega o primeiro grupo e limpa caracteres residuais comuns do OCR
       numero_doc = numMatch[1].trim().split(' ')[0].replace(/[^0-9./-]/g, '');
     }
 
-    // 2. Busca Data (Padrão: dd de Mês de aaaa ou dd/mm/aaaa)
+    // 2. Busca Data
     const datePattern = /((?:\d{1,2}\s+de\s+[a-zA-ZçÇ]+\s+de\s+\d{4})|(?:\d{2}[./]\d{2}[./]\d{4}))/i;
     const dateMatch = datePattern.exec(cleanText);
     
@@ -137,10 +147,29 @@ export class OcrService {
       data_doc = this.formatDate(dateMatch[1]);
     }
 
+    // 3. 🔧 NOVO: Busca específica da EMENTA (Resumo)
+    // Tenta pegar tudo que está DEPOIS do ano (ex: "...DE 2025") e ANTES de "A PREFEITA", "O PREFEITO" ou "Faço saber"
+    const ementaPattern = /(?:DE\s+\d{4}|202\d)[\s.,;]*([\s\S]*?)(?:A\s+PREFEITA|O\s+PREFEITO|Faço\s+saber|Art\.\s*1º)/i;
+    const ementaMatch = ementaPattern.exec(cleanText);
+
+    if (ementaMatch && ementaMatch[1].trim().length > 10) {
+      let extractedEmenta = ementaMatch[1].trim();
+      
+      // Limita a um tamanho seguro (ex: max 300 caracteres) caso o padrão falhe e puxe texto demais
+      if (extractedEmenta.length > 300) {
+          extractedEmenta = extractedEmenta.substring(0, 300).trim() + '...';
+      }
+      trecho_capturado = extractedEmenta;
+    } else {
+      // Fallback de segurança: Se a regex da ementa falhar, pega um trecho muito curto (150 chars) após o número
+      const fallbackIndex = numMatch ? numMatch.index + numMatch[0].length : 0;
+      trecho_capturado = cleanText.substring(fallbackIndex + 30, fallbackIndex + 180).trim() + '...';
+    }
+
     return {
       numero_doc,
       data_doc,
-      trecho_capturado: cleanText.substring(0, 1000).trim() + '...', 
+      trecho_capturado, // Envia a ementa limpa e concisa
     };
   }
 
@@ -150,14 +179,12 @@ export class OcrService {
       julho: '07', agosto: '08', setembro: '09', outubro: '10', novembro: '11', dezembro: '12'
     };
 
-    // Tenta formato por extenso
     let m = /(\d{1,2})\s+de\s+([a-zA-ZçÇ]+)\s+de\s+(\d{4})/i.exec(dateStr);
     if (m) {
       const mesNum = meses[m[2].toLowerCase()];
       if (mesNum) return `${m[3]}-${mesNum}-${m[1].padStart(2, '0')}`;
     }
 
-    // Tenta formato numérico
     m = /(\d{2})[./](\d{2})[./](\d{4})/.exec(dateStr);
     if (m) return `${m[3]}-${m[2]}-${m[1]}`;
 
@@ -172,7 +199,6 @@ export class OcrService {
       ? `FALHA_${docType}_${randomBytes(3).toString('hex')}.pdf`
       : `${docType.toUpperCase()}_${cleanNum}_${data.data_doc}.pdf`;
 
-    // Salva na pasta 'storage' na raiz do projeto
     const dir = path.resolve('./storage');
     if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
     
