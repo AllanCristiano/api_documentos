@@ -79,6 +79,11 @@ export class DocumentoController {
     return this.documentoService.findOne(+id);
   }
 
+  @Get('numero/:number')
+  findByNumber(@Param('number') number: string) {
+    return this.documentoService.findByNumber(number);
+  }
+
   @Get('download/:filename')
   downloadPdf(
     @Param('filename') filename: string,
