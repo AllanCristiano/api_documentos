@@ -159,4 +159,12 @@ export class DocumentoController {
   async padronizarTodos() {
     return await this.documentoService.padronizarTodosAprovados();
   }
+
+  /**
+   * Rota Definitiva: Varre o banco e atualiza as descrições (ementas) pelo novo padrão
+   */
+  @Get('fix/atualizar-ementas')
+  async consertarEmentas() {
+    return await this.documentoService.atualizarTodasAsEmentas();
+  }
 }

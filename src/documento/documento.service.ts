@@ -416,4 +416,53 @@ export class DocumentoService {
       falhas: falha
     };
   }
+
+  // =========================================================================
+  // ROTA DE EMERGÊNCIA: Atualizar todas as Ementas antigas pelo novo padrão
+  // =========================================================================
+  async atualizarTodasAsEmentas() {
+    // Busca todos os documentos que já têm o texto completo extraído
+    const documentos = await this.documentoRepository.find({
+      where: { fullText: Not(IsNull()) }
+    });
+
+    let sucesso = 0;
+    let falha = 0;
+
+    for (const doc of documentos) {
+      try {
+        // Limpa o texto da mesma forma que fizemos no OCR Service
+        const cleanText = doc.fullText.replace(/\s+/g, ' ');
+
+        // A nossa nova Regex cirúrgica para capturar a ementa
+        const ementaPattern = /(?:DE\s+\d{4}|202\d)[\s.,;]*([\s\S]*?)(?:A\s+PREFEITA|O\s+PREFEITO|Faço\s+saber|Art\.\s*1º)/i;
+        const ementaMatch = ementaPattern.exec(cleanText);
+
+        if (ementaMatch && ementaMatch[1].trim().length > 10) {
+          let extractedEmenta = ementaMatch[1].trim();
+          
+          if (extractedEmenta.length > 300) {
+            extractedEmenta = extractedEmenta.substring(0, 300).trim() + '...';
+          }
+
+          // Só salva no banco se a ementa for diferente da que já está lá (para economizar)
+          if (doc.description !== extractedEmenta) {
+            doc.description = extractedEmenta;
+            await this.documentoRepository.save(doc);
+            sucesso++;
+          }
+        }
+      } catch (err) {
+        console.error(`Falha ao reprocessar ementa do documento ID ${doc.id}:`, err);
+        falha++;
+      }
+    }
+
+    return {
+      message: 'Revisão de Ementas concluída!',
+      totalAnalisados: documentos.length,
+      ementasAtualizadas: sucesso,
+      falhas: falha
+    };
+  }
 }
