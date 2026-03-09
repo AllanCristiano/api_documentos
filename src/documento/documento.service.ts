@@ -36,8 +36,28 @@ export class DocumentoService {
   ) {}
 
   // =========================================================================
-  // 1. FLUXO ASSÍNCRONO (PENDENTES E OCR)
+  // 1. FLUXO ASSÍNCRONO (MÉTODOS EXIGIDOS PELO OCR.PROCESSOR)
   // =========================================================================
+
+  /**
+   * 🔧 MÉTODO CRÍTICO: Usado pelo OcrProcessor para salvar os resultados do OCR.
+   * Implementa trava de segurança para não sobrescrever dados já preenchidos.
+   */
+  async atualizarDadosOcr(id: number, dadosOcr: Partial<Documento>): Promise<void> {
+    const documento = await this.findOne(id);
+
+    // Preserva dados se já existirem, exceto se for explicitamente enviado novo texto/status
+    if (dadosOcr.number && !documento.number) documento.number = dadosOcr.number;
+    if (dadosOcr.title && !documento.title) documento.title = dadosOcr.title;
+    if (dadosOcr.date && !documento.date) documento.date = dadosOcr.date;
+    
+    if (dadosOcr.description !== undefined) documento.description = dadosOcr.description;
+    if (dadosOcr.fullText !== undefined) documento.fullText = dadosOcr.fullText;
+    if (dadosOcr.status_ocr !== undefined) documento.status_ocr = dadosOcr.status_ocr;
+    if (dadosOcr.mensagem_erro !== undefined) documento.mensagem_erro = dadosOcr.mensagem_erro;
+
+    await this.documentoRepository.save(documento);
+  }
 
   async createPendente(type: string, tempFilename: string): Promise<Documento> {
     const finalFilename = `${type}/pendente-${Date.now()}-${tempFilename}`;
@@ -60,33 +80,8 @@ export class DocumentoService {
     return documentoSalvo;
   }
 
-  async aprovarDocumento(id: number, dadosAprovados: Partial<Documento>): Promise<Documento> {
-    const documento = await this.findOne(id);
-    let urlDefinitiva = documento.url;
-
-    if (documento.url && documento.url.includes('pendente-')) {
-      try {
-        const bucketMatch = documento.url.match(/atos-normativos\/(.*)/);
-        if (bucketMatch && bucketMatch[1]) {
-          const oldKey = bucketMatch[1];
-          const numLimpo = (dadosAprovados.number || documento.number || 'S-N').replace(/[./]/g, '-');
-          const dataDoc = dadosAprovados.date || documento.date || new Date().toISOString().split('T')[0];
-          const newKey = `${documento.type}/${documento.type}_${numLimpo}_${dataDoc}.pdf`;
-          urlDefinitiva = await this.filesService.renameFileInMinio(oldKey, newKey);
-        }
-      } catch (err) {
-        this.logger.error(`Erro ao renomear arquivo: ${err.message}`);
-      }
-    }
-
-    Object.assign(documento, { ...dadosAprovados, url: urlDefinitiva, aprovado: true });
-    const docSalvo = await this.documentoRepository.save(documento);
-    await this._atualizarTimestamp(docSalvo.type);
-    return docSalvo;
-  }
-
   // =========================================================================
-  // 2. MÉTODOS DE BUSCA E DOWNLOAD (OS QUE ESTAVAM FALTANDO)
+  // 2. MÉTODOS DE BUSCA E DOWNLOAD
   // =========================================================================
 
   async findAll(): Promise<Documento[]> {
@@ -117,8 +112,33 @@ export class DocumentoService {
   }
 
   // =========================================================================
-  // 3. MÉTODOS DE ATUALIZAÇÃO E DELEÇÃO
+  // 3. MÉTODOS DE MANUTENÇÃO E APROVAÇÃO
   // =========================================================================
+
+  async aprovarDocumento(id: number, dadosAprovados: Partial<Documento>): Promise<Documento> {
+    const documento = await this.findOne(id);
+    let urlDefinitiva = documento.url;
+
+    if (documento.url && documento.url.includes('pendente-')) {
+      try {
+        const bucketMatch = documento.url.match(/atos-normativos\/(.*)/);
+        if (bucketMatch && bucketMatch[1]) {
+          const oldKey = bucketMatch[1];
+          const numLimpo = (dadosAprovados.number || documento.number || 'S-N').replace(/[./]/g, '-');
+          const dataDoc = dadosAprovados.date || documento.date || new Date().toISOString().split('T')[0];
+          const newKey = `${documento.type}/${documento.type}_${numLimpo}_${dataDoc}.pdf`;
+          urlDefinitiva = await this.filesService.renameFileInMinio(oldKey, newKey);
+        }
+      } catch (err) {
+        this.logger.error(`Erro ao renomear arquivo: ${err.message}`);
+      }
+    }
+
+    Object.assign(documento, { ...dadosAprovados, url: urlDefinitiva, aprovado: true });
+    const docSalvo = await this.documentoRepository.save(documento);
+    await this._atualizarTimestamp(docSalvo.type);
+    return docSalvo;
+  }
 
   async update(id: number, updateDto: Partial<Documento>): Promise<Documento> {
     const documento = await this.documentoRepository.preload({ id, ...updateDto });
@@ -151,7 +171,7 @@ export class DocumentoService {
   }
 
   // =========================================================================
-  // 4. FERRAMENTAS DE FIX E MIGRAÇÃO (SANANITIZAÇÃO)
+  // 4. ROTAS DE FIX (MIGRAÇÃO DOS 3000+)
   // =========================================================================
 
   async migracaoMassaComSanitizacaoELog() {
@@ -161,7 +181,7 @@ export class DocumentoService {
       where: [{ fullText: IsNull() }, { fullText: "" }]
     });
 
-    logStream.write(`\n--- MIGRAÇÃO: ${new Date().toLocaleString()} ---\n`);
+    logStream.write(`\n--- INÍCIO MIGRAÇÃO: ${new Date().toLocaleString()} ---\n`);
     let processados = 0;
     for (const doc of docsFaltantes) {
       try {
