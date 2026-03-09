@@ -3,13 +3,14 @@ import {
   NotFoundException,
   ConflictException,
   InternalServerErrorException,
+  Logger,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository, Not, IsNull } from 'typeorm';
 import { InjectQueue } from '@nestjs/bullmq';
 import { Queue } from 'bullmq';
 import { join, parse } from 'path';
-import { createReadStream, statSync } from 'fs';
+import { createReadStream, statSync, createWriteStream } from 'fs';
 import { randomUUID } from 'crypto';
 
 import { Documento, StatusOcr } from './entities/documento.entity';
@@ -19,6 +20,7 @@ import { CreateDocumentoDto } from './dto/create-documento.dto';
 
 @Injectable()
 export class DocumentoService {
+  private readonly logger = new Logger(DocumentoService.name);
   private readonly pdfDirectory = join(process.cwd(), 'pdfs');
 
   constructor(
@@ -30,31 +32,16 @@ export class DocumentoService {
 
     private readonly filesService: FilesService,
 
-    // Injeção da fila do BullMQ
     @InjectQueue('ocr-queue') private ocrQueue: Queue,
   ) {}
 
   // =========================================================================
-  // 1. NOVO FLUXO ASSÍNCRONO (FILA E APROVAÇÃO)
+  // 1. FLUXO ASSÍNCRONO (PENDENTES E OCR)
   // =========================================================================
 
-  /**
-   * Passo 1: Recebe o arquivo em lote, salva no banco como PENDENTE e envia pra fila.
-   */
   async createPendente(type: string, tempFilename: string): Promise<Documento> {
     const finalFilename = `${type}/pendente-${Date.now()}-${tempFilename}`;
-
-    let uploadResult;
-    try {
-      uploadResult = await this.filesService.moveTempFileToMinio(
-        tempFilename,
-        finalFilename,
-      );
-    } catch (error) {
-      throw new InternalServerErrorException(
-        `Erro ao salvar o arquivo: ${error.message}`,
-      );
-    }
+    const uploadResult = await this.filesService.moveTempFileToMinio(tempFilename, finalFilename);
 
     const novoDocumento = this.documentoRepository.create({
       type: type,
@@ -64,405 +51,200 @@ export class DocumentoService {
     });
 
     const documentoSalvo = await this.documentoRepository.save(novoDocumento);
-
-    // Envia o trabalho para a fila (O worker vai pegar isso aqui)
     await this.ocrQueue.add('processar-pdf', {
       documentoId: documentoSalvo.id,
       tipo: type,
-      arquivoUrl: uploadResult.url, 
+      arquivoUrl: uploadResult.url,
     });
 
     return documentoSalvo;
   }
 
-  /**
-   * Passo 2: O Worker (Processador) chama este método quando termina de ler o PDF.
-   * 🔧 ATUALIZADO COM TRAVA DE SEGURANÇA PARA PRESERVAR DADOS ANTIGOS.
-   */
-  async atualizarDadosOcr(id: number, dadosOcr: Partial<Documento>): Promise<void> {
-    const documento = await this.findOne(id);
-
-    // 1. TRAVA DE SEGURANÇA: Só atualiza se o dado novo existir E o antigo estiver vazio
-    if (dadosOcr.number && !documento.number) documento.number = dadosOcr.number;
-    if (dadosOcr.title && !documento.title) documento.title = dadosOcr.title;
-    if (dadosOcr.date && !documento.date) documento.date = dadosOcr.date;
-    
-    // 2. ATUALIZAÇÃO DE TEXTO: Só substitui se o OCR realmente mandou algum texto
-    if (dadosOcr.description !== undefined) documento.description = dadosOcr.description;
-    if (dadosOcr.fullText !== undefined) documento.fullText = dadosOcr.fullText;
-    
-    // 3. CONTROLE DE STATUS: Aceita o status que vier (PROCESSANDO, CONCLUIDO, ERRO)
-    if (dadosOcr.status_ocr !== undefined) documento.status_ocr = dadosOcr.status_ocr;
-    if (dadosOcr.mensagem_erro !== undefined) documento.mensagem_erro = dadosOcr.mensagem_erro;
-
-    await this.documentoRepository.save(documento);
-  }
-
-  /**
-   * Passo 3: O usuário revisa os dados na interface e aprova a publicação.
-   * 🔧 ATUALIZADO: Agora renomeia o arquivo no MinIO para o formato definitivo!
-   */
   async aprovarDocumento(id: number, dadosAprovados: Partial<Documento>): Promise<Documento> {
     const documento = await this.findOne(id);
-
-    // 1. Checagem de conflito
-    if (dadosAprovados.number && dadosAprovados.number !== documento.number) {
-      const conflito = await this.documentoRepository.findOneBy({ number: dadosAprovados.number, type: documento.type });
-      if (conflito && conflito.id !== documento.id) {
-        throw new ConflictException(`Documento com número ${dadosAprovados.number} já existe.`);
-      }
-    }
-
     let urlDefinitiva = documento.url;
 
-    // 2. Renomear o arquivo no MinIO (Tirar o "pendente-")
     if (documento.url && documento.url.includes('pendente-')) {
       try {
         const bucketMatch = documento.url.match(/atos-normativos\/(.*)/);
-        
         if (bucketMatch && bucketMatch[1]) {
           const oldKey = bucketMatch[1];
-          
-          const numLimpo = dadosAprovados.number 
-            ? dadosAprovados.number.replace(/[./]/g, '-') 
-            : `sem-numero-${Date.now()}`;
-          
-          const dataDoc = dadosAprovados.date || new Date().toISOString().split('T')[0];
-
+          const numLimpo = (dadosAprovados.number || documento.number || 'S-N').replace(/[./]/g, '-');
+          const dataDoc = dadosAprovados.date || documento.date || new Date().toISOString().split('T')[0];
           const newKey = `${documento.type}/${documento.type}_${numLimpo}_${dataDoc}.pdf`;
-
           urlDefinitiva = await this.filesService.renameFileInMinio(oldKey, newKey);
         }
       } catch (err) {
-        console.error(`Erro não crítico ao tentar renomear o arquivo definitivo do documento ID ${id}:`, err);
+        this.logger.error(`Erro ao renomear arquivo: ${err.message}`);
       }
     }
 
-    // 3. Atualiza os dados no banco, marca como aprovado e salva a URL nova
-    Object.assign(documento, {
-      ...dadosAprovados,
-      url: urlDefinitiva,
-      aprovado: true,
-    });
-
+    Object.assign(documento, { ...dadosAprovados, url: urlDefinitiva, aprovado: true });
     const docSalvo = await this.documentoRepository.save(documento);
-    
-    // Atualiza a dashboard apenas quando o documento é oficialmente aprovado
     await this._atualizarTimestamp(docSalvo.type);
-
     return docSalvo;
   }
 
   // =========================================================================
-  // 2. MÉTODOS ORIGINAIS DE BUSCA E MANUTENÇÃO
+  // 2. MÉTODOS DE BUSCA E DOWNLOAD (OS QUE ESTAVAM FALTANDO)
   // =========================================================================
 
   async findAll(): Promise<Documento[]> {
-    return await this.documentoRepository.find({
-      order: {
-        date: 'DESC',
-      },
-    });
-  }
-
-  async findByNumber(number: string): Promise<Documento> {
-    const documento = await this.documentoRepository.findOneBy({ number });
-    if (!documento) {
-      throw new NotFoundException(`Documento com número ${number} não encontrado`);
-    }
-    return documento;
+    return await this.documentoRepository.find({ order: { date: 'DESC' } });
   }
 
   async findOne(id: number): Promise<Documento> {
     const documento = await this.documentoRepository.findOneBy({ id });
-    if (!documento) {
-      throw new NotFoundException(`Documento com ID ${id} não encontrado`);
-    }
+    if (!documento) throw new NotFoundException(`Documento ID ${id} não encontrado`);
     return documento;
   }
 
-  /**
-   * Atualiza apenas o arquivo PDF.
-   * Agora utiliza nomeOriginal + UUID para evitar sobrescrita destrutiva no MinIO.
-   */
-  async updateFile(id: number, tempFilename: string, originalName?: string): Promise<Documento> {
-    const documento = await this.findOne(id);
-
-    // Limpa o nome original ou usa o ID como fallback
-    const baseName = originalName 
-      ? parse(originalName).name.replace(/[^\w\d-]/g, '') 
-      : `doc-${documento.id}`;
-
-    // Gera o nome final com UUID
-    const uuid = randomUUID();
-    const finalFilename = `${documento.type}/${baseName}-${uuid}.pdf`;
-
-    let uploadResult;
-    try {
-      uploadResult = await this.filesService.moveTempFileToMinio(
-        tempFilename,
-        finalFilename,
-      );
-    } catch (error) {
-      throw new InternalServerErrorException(
-        `Erro ao substituir o arquivo PDF: ${error.message}`,
-      );
-    }
-
-    documento.url = uploadResult.url;
-
-    const documentoSalvo = await this.documentoRepository.save(documento);
-    await this._atualizarTimestamp(documentoSalvo.type);
-
-    return documentoSalvo;
+  async findByNumber(number: string): Promise<Documento> {
+    const documento = await this.documentoRepository.findOneBy({ number });
+    if (!documento) throw new NotFoundException(`Documento número ${number} não encontrado`);
+    return documento;
   }
 
   getPdfStream(filename: string) {
     const filePath = join(this.pdfDirectory, filename);
-
     try {
-      statSync(filePath);
+      const stat = statSync(filePath);
+      const stream = createReadStream(filePath);
+      return { stream, stat };
     } catch {
       throw new NotFoundException('Arquivo não encontrado no disco local');
     }
-
-    const stream = createReadStream(filePath);
-    const stat = statSync(filePath);
-    return { stream, stat };
   }
 
-  async atualizaData(numero: string, novaData: string): Promise<Documento> {
-    const documento = await this.documentoRepository.findOneBy({
-      number: numero,
-    });
-    if (!documento) {
-      throw new NotFoundException(`Documento com número ${numero} não encontrado`);
-    }
+  // =========================================================================
+  // 3. MÉTODOS DE ATUALIZAÇÃO E DELEÇÃO
+  // =========================================================================
+
+  async update(id: number, updateDto: Partial<Documento>): Promise<Documento> {
+    const documento = await this.documentoRepository.preload({ id, ...updateDto });
+    if (!documento) throw new NotFoundException(`ID ${id} não encontrado`);
+    const salvo = await this.documentoRepository.save(documento);
+    await this._atualizarTimestamp(salvo.type);
+    return salvo;
+  }
+
+  async updateFile(id: number, tempFilename: string, originalName?: string): Promise<Documento> {
+    const documento = await this.findOne(id);
+    const baseName = originalName ? parse(originalName).name.replace(/[^\w\d-]/g, '') : `doc-${id}`;
+    const finalFilename = `${documento.type}/${baseName}-${randomUUID()}.pdf`;
+    
+    const uploadResult = await this.filesService.moveTempFileToMinio(tempFilename, finalFilename);
+    documento.url = uploadResult.url;
+    return await this.documentoRepository.save(documento);
+  }
+
+  async atualizaData(number: string, novaData: string): Promise<Documento> {
+    const documento = await this.findByNumber(number);
     documento.date = novaData;
     return this.documentoRepository.save(documento);
   }
 
-  async update(id: number, updateDocumentoDto: Partial<CreateDocumentoDto>): Promise<Documento> {
-    // eslint-disable-next-line @typescript-eslint/no-unused-vars
-    const { tempFilename, ...dadosParaAtualizar } = updateDocumentoDto as any;
-
-    const documento = await this.documentoRepository.preload({
-      id: id,
-      ...dadosParaAtualizar,
-    });
-
-    if (!documento) {
-      throw new NotFoundException(`Documento com ID ${id} não encontrado`);
-    }
-
-    const documentoAtualizado = await this.documentoRepository.save(documento);
-    await this._atualizarTimestamp(documentoAtualizado.type);
-
-    return documentoAtualizado;
-  }
-
   async remove(id: number): Promise<void> {
-    const documento = await this.documentoRepository.findOneBy({ id });
-    if (!documento) {
-      throw new NotFoundException(`Documento com ID ${id} não encontrado`);
-    }
-
-    const tipoDoDocumento = documento.type;
-    await this.documentoRepository.remove(documento);
-
-    await this._atualizarTimestamp(tipoDoDocumento);
-  }
-
-  private async _atualizarTimestamp(tipoDocumento: string) {
-    if (!tipoDocumento) return;
-
-    try {
-      const agora = new Date();
-      const tipoNormalizado = tipoDocumento.toLowerCase().trim();
-
-      let registro = await this.atualizacaoRepository.findOneBy({ id: 1 });
-      if (!registro) {
-        registro = this.atualizacaoRepository.create({ id: 1 });
-      }
-
-      registro.date_total = agora;
-
-      switch (tipoNormalizado) {
-        case 'portaria':
-          registro.date_portaria = agora;
-          break;
-        case 'lei_ordinaria':
-        case 'lei ordinaria':
-          registro.date_lei_ordinaria = agora;
-          break;
-        case 'lei_complementar':
-        case 'lei complementar':
-          registro.date_lei_complementar = agora;
-          break;
-        case 'decreto':
-          registro.date_decreto = agora;
-          break;
-        case 'emenda':
-          registro.date_emenda = agora;
-          break;
-        case 'lei_organica':
-        case 'lei organica':
-          registro.date_lei_organica = agora;
-          break;
-        default:
-          console.warn(
-            `[DocumentoService] Tipo desconhecido para timestamp: ${tipoDocumento}`,
-          );
-      }
-
-      await this.atualizacaoRepository.save(registro);
-    } catch (error) {
-      console.error('Erro ao atualizar timestamp (não crítico):', error);
-    }
+    const doc = await this.findOne(id);
+    await this.documentoRepository.remove(doc);
+    await this._atualizarTimestamp(doc.type);
   }
 
   // =========================================================================
-  // ROTAS DE EMERGÊNCIA / MANUTENÇÃO
+  // 4. FERRAMENTAS DE FIX E MIGRAÇÃO (SANANITIZAÇÃO)
   // =========================================================================
-  
-  async reprocessarLegadosFila() {
-    const documentos = await this.documentoRepository.find({
-      where: { 
-        fullText: IsNull(),
-        url: Not(IsNull())
-      }
+
+  async migracaoMassaComSanitizacaoELog() {
+    const logPath = join(process.cwd(), 'migracao_falhas.log');
+    const logStream = createWriteStream(logPath, { flags: 'a' });
+    const docsFaltantes = await this.documentoRepository.find({
+      where: [{ fullText: IsNull() }, { fullText: "" }]
     });
 
-    const documentosValidos = documentos.filter(doc => doc.url.trim() !== '');
+    logStream.write(`\n--- MIGRAÇÃO: ${new Date().toLocaleString()} ---\n`);
+    let processados = 0;
+    for (const doc of docsFaltantes) {
+      try {
+        await this.ocrQueue.add('processar-pdf', {
+          documentoId: doc.id,
+          tipo: doc.type,
+          arquivoUrl: doc.url,
+        });
+        await this.documentoRepository.update(doc.id, { status_ocr: StatusOcr.PROCESSANDO });
+        processados++;
+      } catch (err) {
+        logStream.write(`[ERRO] ID: ${doc.id} | ${err.message}\n`);
+      }
+    }
+    logStream.end();
+    return { enfileirados: processados, totalFaltantes: docsFaltantes.length };
+  }
 
-    for (const doc of documentosValidos) {
-      await this.documentoRepository.update(doc.id, { 
-        status_ocr: StatusOcr.PROCESSANDO,
-        aprovado: false 
-      });
-
+  async reprocessarLegadosFila() {
+    const docs = await this.documentoRepository.find({
+      where: { fullText: IsNull(), url: Not(IsNull()) }
+    });
+    for (const doc of docs) {
       await this.ocrQueue.add('processar-pdf', {
         documentoId: doc.id,
         tipo: doc.type,
         arquivoUrl: doc.url,
       });
     }
-
-    return {
-      message: 'Reprocessamento em lote iniciado com sucesso!',
-      quantidadeEnviadaParaFila: documentosValidos.length,
-      dica: 'Acompanhe os logs do PM2 no servidor para ver o OCR trabalhando!'
-    };
+    return { quantidade: docs.length };
   }
 
-  // =========================================================================
-  // ROTA DEFINITIVA: Padronizar nomes no MinIO e URLs no Banco de Dados
-  // =========================================================================
   async padronizarTodosAprovados() {
-    // 1. Pega TODOS os documentos aprovados na tabela
-    const documentos = await this.documentoRepository.find({
-      where: { aprovado: true }
-    });
-
+    const documentos = await this.documentoRepository.find({ where: { aprovado: true } });
     let sucesso = 0;
-    let ignorados = 0;
-    let falha = 0;
-
     for (const doc of documentos) {
       try {
-        if (!doc.url) continue;
-
-        // Pega o que vem depois do nome do bucket (atos-normativos/)
         const bucketMatch = doc.url.match(/atos-normativos\/(.*)/);
-        
         if (bucketMatch && bucketMatch[1]) {
-          const oldKey = bucketMatch[1]; 
-          
-          // Monta as partes do nome padrão
-          const numLimpo = doc.number 
-            ? doc.number.replace(/[./]/g, '-') 
-            : `sem-numero-${doc.id}`;
-          const dataDoc = doc.date || new Date().toISOString().split('T')[0];
-
-          // Cria a chave padrão definitiva (ex: LEI_ORDINARIA/LEI_ORDINARIA_6295_2025-12-31.pdf)
-          const newKey = `${doc.type}/${doc.type}_${numLimpo}_${dataDoc}.pdf`;
-
-          // Se a URL do banco já é idêntica ao padrão novo, não faz nada
-          if (oldKey === newKey) {
-            ignorados++;
-            continue;
-          }
-
-          // 1. Muda o nome fisicamente lá no MinIO
-          const novaUrl = await this.filesService.renameFileInMinio(oldKey, newKey);
-
-          // 2. Muda na tabela do Banco de Dados
-          doc.url = novaUrl;
-          await this.documentoRepository.save(doc);
-          
-          sucesso++;
-        }
-      } catch (err) {
-        console.error(`Falha ao padronizar o documento ID ${doc.id}:`, err);
-        falha++;
-      }
-    }
-
-    return {
-      message: 'Padronização de URLs e arquivos concluída!',
-      totalAnalisados: documentos.length,
-      atualizadosNoMinioENoBanco: sucesso,
-      jaEstavamNoPadrao: ignorados,
-      falhas: falha
-    };
-  }
-
-  // =========================================================================
-  // ROTA DE EMERGÊNCIA: Atualizar todas as Ementas antigas pelo novo padrão
-  // =========================================================================
-  async atualizarTodasAsEmentas() {
-    // Busca todos os documentos que já têm o texto completo extraído
-    const documentos = await this.documentoRepository.find({
-      where: { fullText: Not(IsNull()) }
-    });
-
-    let sucesso = 0;
-    let falha = 0;
-
-    for (const doc of documentos) {
-      try {
-        // Limpa o texto da mesma forma que fizemos no OCR Service
-        const cleanText = doc.fullText.replace(/\s+/g, ' ');
-
-        // A nossa nova Regex cirúrgica para capturar a ementa
-        const ementaPattern = /(?:DE\s+\d{4}|202\d)[\s.,;]*([\s\S]*?)(?:A\s+PREFEITA|O\s+PREFEITO|Faço\s+saber|Art\.\s*1º)/i;
-        const ementaMatch = ementaPattern.exec(cleanText);
-
-        if (ementaMatch && ementaMatch[1].trim().length > 10) {
-          let extractedEmenta = ementaMatch[1].trim();
-          
-          if (extractedEmenta.length > 300) {
-            extractedEmenta = extractedEmenta.substring(0, 300).trim() + '...';
-          }
-
-          // Só salva no banco se a ementa for diferente da que já está lá (para economizar)
-          if (doc.description !== extractedEmenta) {
-            doc.description = extractedEmenta;
+          const oldKey = bucketMatch[1];
+          const numLimpo = doc.number ? doc.number.replace(/[./]/g, '-') : `sem-num-${doc.id}`;
+          const newKey = `${doc.type}/${doc.type}_${numLimpo}_${doc.date}.pdf`;
+          if (oldKey !== newKey) {
+            doc.url = await this.filesService.renameFileInMinio(oldKey, newKey);
             await this.documentoRepository.save(doc);
             sucesso++;
           }
         }
-      } catch (err) {
-        console.error(`Falha ao reprocessar ementa do documento ID ${doc.id}:`, err);
-        falha++;
+      } catch {}
+    }
+    return { padronizados: sucesso };
+  }
+
+  async atualizarTodasAsEmentas() {
+    const documentos = await this.documentoRepository.find({ where: { fullText: Not(IsNull()) } });
+    let sucesso = 0;
+    for (const doc of documentos) {
+      const cleanText = doc.fullText.replace(/\s+/g, ' ');
+      const ementaPattern = /(?:DE\s+\d{4}|202\d)[\s.,;]*([\s\S]*?)(?:A\s+PREFEITA|O\s+PREFEITO|Faço\s+saber|Art\.\s*1º)/i;
+      const ementaMatch = ementaPattern.exec(cleanText);
+      if (ementaMatch) {
+        const ementaLimpa = ementaMatch[1].trim()
+          .replace(/[=|_|Ú|À|\\|\[|\]|«|»|©]+/g, ' ')
+          .substring(0, 350);
+        doc.description = ementaLimpa;
+        await this.documentoRepository.save(doc);
+        sucesso++;
       }
     }
+    return { atualizados: sucesso };
+  }
 
-    return {
-      message: 'Revisão de Ementas concluída!',
-      totalAnalisados: documentos.length,
-      ementasAtualizadas: sucesso,
-      falhas: falha
-    };
+  private async _atualizarTimestamp(tipo: string) {
+    try {
+      let registro = await this.atualizacaoRepository.findOneBy({ id: 1 }) || this.atualizacaoRepository.create({ id: 1 });
+      const agora = new Date();
+      registro.date_total = agora;
+      const t = tipo.toLowerCase();
+      if (t === 'portaria') registro.date_portaria = agora;
+      else if (t.includes('ordinaria')) registro.date_lei_ordinaria = agora;
+      else if (t.includes('complementar')) registro.date_lei_complementar = agora;
+      else if (t === 'decreto') registro.date_decreto = agora;
+      await this.atualizacaoRepository.save(registro);
+    } catch {}
   }
 }

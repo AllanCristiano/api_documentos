@@ -24,12 +24,11 @@ export class DocumentoController {
   constructor(private readonly documentoService: DocumentoService) {}
 
   // =========================================================================
-  // 1. ROTAS DO NOVO FLUXO ASSÍNCRONO
+  // 1. FLUXO ASSÍNCRONO (PENDENTES E FILA)
   // =========================================================================
 
   /**
-   * Passo 1: Recebe o tipo e o arquivo temporário, cria como PENDENTE e joga na fila.
-   * Retorna 202 (Accepted) porque o processamento real (OCR) será feito em background.
+   * Passo 1: Recebe o arquivo temporário, cria como PENDENTE e envia para a fila OCR.
    */
   @Post()
   @HttpCode(HttpStatus.ACCEPTED)
@@ -39,14 +38,14 @@ export class DocumentoController {
   ) {
     if (!type || !tempFilename) {
       throw new BadRequestException(
-        'Os campos "type" e "tempFilename" são obrigatórios para iniciar o processamento.',
+        'Os campos "type" e "tempFilename" são obrigatórios.',
       );
     }
     return this.documentoService.createPendente(type, tempFilename);
   }
 
   /**
-   * Passo 3: Rota para o usuário aprovar o documento após revisar os dados do OCR.
+   * Passo 3: Aprovação manual dos dados extraídos pelo OCR.
    */
   @Patch(':id/aprovar')
   aprovarDocumento(
@@ -57,7 +56,7 @@ export class DocumentoController {
   }
 
   // =========================================================================
-  // 2. ROTAS ORIGINAIS (Busca, Edição, Deleção e Download)
+  // 2. BUSCA, EDIÇÃO E DOWNLOAD
   // =========================================================================
 
   @Get()
@@ -66,8 +65,8 @@ export class DocumentoController {
   }
 
   @Get(':id')
-  findOne(@Param('id') id: string) {
-    return this.documentoService.findOne(+id);
+  findOne(@Param('id', ParseIntPipe) id: number) {
+    return this.documentoService.findOne(id);
   }
 
   @Get('numero/:number')
@@ -80,42 +79,17 @@ export class DocumentoController {
     @Param('filename') filename: string,
     @Res({ passthrough: true }) res: Response,
   ): StreamableFile {
-    type PdfStreamResult = {
-      stream: import('stream').Readable;
-      stat: { size: number };
-    };
-
-    let fileData: PdfStreamResult;
-    try {
-      fileData = this.documentoService.getPdfStream(
-        filename,
-      ) as PdfStreamResult;
-    } catch {
-      throw new NotFoundException('Arquivo não encontrado');
-    }
-
-    const { stream, stat } = fileData;
+    const fileData = this.documentoService.getPdfStream(filename);
 
     res.set({
       'Content-Type': 'application/pdf',
       'Content-Disposition': `attachment; filename="${filename}"`,
-      'Content-Length': stat.size,
+      'Content-Length': fileData.stat.size,
     });
 
-    return new StreamableFile(stream);
+    return new StreamableFile(fileData.stream);
   }
 
-  @Patch('data/:numero')
-  async atualizaData(
-    @Param('numero') numero: string,
-    @Body('novaData') novaData: string,
-  ) {
-    return this.documentoService.atualizaData(numero, novaData);
-  }
-
-  /**
-   * Atualizado para receber também o originalName do frontend
-   */
   @Patch(':id/file')
   async updateFile(
     @Param('id', ParseIntPipe) id: number,
@@ -123,9 +97,7 @@ export class DocumentoController {
     @Body('originalName') originalName?: string,
   ) {
     if (!tempFilename) {
-      throw new BadRequestException(
-        'O nome do arquivo temporário (tempFilename) é obrigatório.',
-      );
+      throw new BadRequestException('O tempFilename é obrigatório.');
     }
     return this.documentoService.updateFile(id, tempFilename, originalName);
   }
@@ -135,7 +107,7 @@ export class DocumentoController {
     @Param('id', ParseIntPipe) id: number,
     @Body() updateDocumentoDto: Partial<AprovarDocumentoDto>,
   ) {
-    return this.documentoService.update(id, updateDocumentoDto as any);
+    return this.documentoService.update(id, updateDocumentoDto);
   }
 
   @Delete(':id')
@@ -144,16 +116,22 @@ export class DocumentoController {
   }
 
   // =========================================================================
-  // 3. ROTAS DE MANUTENÇÃO (FIX)
+  // 3. ROTAS DE MANUTENÇÃO E FIX (OPERAÇÃO DE PRODUÇÃO)
   // =========================================================================
 
-  @Get('fix/reprocessar-tudo')
-  reprocessarTodosLegados() {
-    return this.documentoService.reprocessarLegadosFila();
+  /**
+   * 🔥 ROTA DE EMERGÊNCIA: Processa os 3.000+ documentos sem texto.
+   * - Identifica registros sem fullText.
+   * - Envia para a fila para fazer OCR e Sanitização (remove ==, ||, etc).
+   * - Gera o log 'migracao_falhas.log' na raiz da API.
+   */
+  @Get('fix/migracao-geral')
+  async migracaoGeral() {
+    return await this.documentoService.migracaoMassaComSanitizacaoELog();
   }
 
   /**
-   * Rota Definitiva: Padroniza os nomes dos arquivos no MinIO e no banco de dados.
+   * Padroniza os nomes dos arquivos no MinIO e URLs no banco de dados.
    */
   @Get('fix/padronizar-todos')
   async padronizarTodos() {
@@ -161,10 +139,18 @@ export class DocumentoController {
   }
 
   /**
-   * Rota Definitiva: Varre o banco e atualiza as descrições (ementas) pelo novo padrão
+   * Varre quem já tem OCR e aplica a nova limpeza de ementas.
    */
   @Get('fix/atualizar-ementas')
   async consertarEmentas() {
     return await this.documentoService.atualizarTodasAsEmentas();
+  }
+
+  /**
+   * Fallback para reprocessar legados via fila BullMQ.
+   */
+  @Get('fix/reprocessar-tudo')
+  reprocessarTodosLegados() {
+    return this.documentoService.reprocessarLegadosFila();
   }
 }
