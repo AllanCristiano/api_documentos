@@ -1,15 +1,16 @@
-// src/files/minio.service.ts
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import {
   S3Client,
   PutObjectCommand,
   GetObjectCommand,
+  CreateBucketCommand,
+  HeadBucketCommand,
 } from '@aws-sdk/client-s3';
 import { readFileSync } from 'fs';
 
 @Injectable()
-export class MinioService {
+export class MinioService implements OnModuleInit {
   private readonly logger = new Logger(MinioService.name);
   private readonly s3Client: S3Client;
   private readonly bucketName: string;
@@ -27,6 +28,31 @@ export class MinioService {
       },
       forcePathStyle: true,
     });
+  }
+
+  // =========================================================================
+  // NOVO: Executado automaticamente quando a API sobe
+  // =========================================================================
+  async onModuleInit() {
+    try {
+      // Tenta checar se o bucket já existe
+      await this.s3Client.send(new HeadBucketCommand({ Bucket: this.bucketName }));
+      this.logger.log(`[MinIO] Bucket "${this.bucketName}" já existe e está pronto para uso.`);
+    } catch (error) {
+      // O erro 404 (NotFound) significa que o bucket não existe. Vamos criar!
+      if (error.name === 'NotFound' || error.$metadata?.httpStatusCode === 404) {
+        this.logger.warn(`[MinIO] Bucket "${this.bucketName}" não encontrado. Criando agora...`);
+        try {
+          await this.s3Client.send(new CreateBucketCommand({ Bucket: this.bucketName }));
+          this.logger.log(`[MinIO] Bucket "${this.bucketName}" criado com sucesso!`);
+        } catch (createError) {
+          this.logger.error(`[MinIO] Erro ao tentar criar o bucket "${this.bucketName}"`, createError);
+        }
+      } else {
+        // Se for outro erro (como credenciais inválidas ou MinIO fora do ar), a gente loga
+        this.logger.error(`[MinIO] Erro ao verificar o bucket "${this.bucketName}"`, error);
+      }
+    }
   }
 
   async uploadFile(filePath: string, objectName: string) {
@@ -64,9 +90,7 @@ export class MinioService {
       const command = new GetObjectCommand(params);
       const response = await this.s3Client.send(command);
 
-      // 🔧 CORREÇÃO AQUI: Verifique se o Body existe
       if (response.Body) {
-        // O corpo da resposta (Body) é um stream. Precisamos convertê-lo para um Buffer.
         const byteArray = await response.Body.transformToByteArray();
         const buffer = Buffer.from(byteArray);
 
@@ -74,7 +98,6 @@ export class MinioService {
         return buffer;
       }
 
-      // Se o Body não existir, lance um erro
       throw new Error(
         `Corpo da resposta para o arquivo "${objectName}" está vazio.`,
       );

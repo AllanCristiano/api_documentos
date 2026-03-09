@@ -82,20 +82,18 @@ export class DocumentoService {
   async atualizarDadosOcr(id: number, dadosOcr: Partial<Documento>): Promise<void> {
     const documento = await this.findOne(id);
 
-    // TRAVA DE SEGURANÇA:
-    // Se for um documento antigo (legado), ele já tem number, title e date. Mantemos os originais!
-    // Se for um documento novo (vazio), usamos o que o OCR extraiu.
-    Object.assign(documento, {
-      number: documento.number ? documento.number : dadosOcr.number,
-      title: documento.title ? documento.title : dadosOcr.title,
-      date: documento.date ? documento.date : dadosOcr.date,
-      
-      // Estes dois nós SEMPRE atualizamos, pois é o objetivo do OCR
-      description: dadosOcr.description,
-      fullText: dadosOcr.fullText,
-      
-      status_ocr: StatusOcr.CONCLUIDO,
-    });
+    // 1. TRAVA DE SEGURANÇA: Só atualiza se o dado novo existir E o antigo estiver vazio
+    if (dadosOcr.number && !documento.number) documento.number = dadosOcr.number;
+    if (dadosOcr.title && !documento.title) documento.title = dadosOcr.title;
+    if (dadosOcr.date && !documento.date) documento.date = dadosOcr.date;
+    
+    // 2. ATUALIZAÇÃO DE TEXTO: Só substitui se o OCR realmente mandou algum texto
+    if (dadosOcr.description !== undefined) documento.description = dadosOcr.description;
+    if (dadosOcr.fullText !== undefined) documento.fullText = dadosOcr.fullText;
+    
+    // 3. CONTROLE DE STATUS: Aceita o status que vier (PROCESSANDO, CONCLUIDO, ERRO)
+    if (dadosOcr.status_ocr !== undefined) documento.status_ocr = dadosOcr.status_ocr;
+    if (dadosOcr.mensagem_erro !== undefined) documento.mensagem_erro = dadosOcr.mensagem_erro;
 
     await this.documentoRepository.save(documento);
   }
