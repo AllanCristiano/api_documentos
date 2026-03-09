@@ -6,6 +6,8 @@ import {
   GetObjectCommand,
   CreateBucketCommand,
   HeadBucketCommand,
+  CopyObjectCommand,
+  DeleteObjectCommand,
 } from '@aws-sdk/client-s3';
 import { readFileSync } from 'fs';
 
@@ -31,15 +33,13 @@ export class MinioService implements OnModuleInit {
   }
 
   // =========================================================================
-  // NOVO: Executado automaticamente quando a API sobe
+  // Executado automaticamente quando a API sobe
   // =========================================================================
   async onModuleInit() {
     try {
-      // Tenta checar se o bucket já existe
       await this.s3Client.send(new HeadBucketCommand({ Bucket: this.bucketName }));
       this.logger.log(`[MinIO] Bucket "${this.bucketName}" já existe e está pronto para uso.`);
     } catch (error) {
-      // O erro 404 (NotFound) significa que o bucket não existe. Vamos criar!
       if (error.name === 'NotFound' || error.$metadata?.httpStatusCode === 404) {
         this.logger.warn(`[MinIO] Bucket "${this.bucketName}" não encontrado. Criando agora...`);
         try {
@@ -49,7 +49,6 @@ export class MinioService implements OnModuleInit {
           this.logger.error(`[MinIO] Erro ao tentar criar o bucket "${this.bucketName}"`, createError);
         }
       } else {
-        // Se for outro erro (como credenciais inválidas ou MinIO fora do ar), a gente loga
         this.logger.error(`[MinIO] Erro ao verificar o bucket "${this.bucketName}"`, error);
       }
     }
@@ -103,6 +102,44 @@ export class MinioService implements OnModuleInit {
       );
     } catch (error) {
       this.logger.error(`Erro ao baixar o arquivo "${objectName}"`, error);
+      throw error;
+    }
+  }
+
+  // =========================================================================
+  // NOVO: Renomeia o arquivo no MinIO (Copia para o novo destino e apaga a origem)
+  // =========================================================================
+  async renameFile(oldObjectName: string, newObjectName: string): Promise<string> {
+    try {
+      // 1. Define a fonte da cópia. O S3 V3 exige que o CopySource tenha o formato "bucket/chave"
+      const copySource = `${this.bucketName}/${oldObjectName}`;
+
+      // 2. Copia o objeto para o novo nome
+      await this.s3Client.send(
+        new CopyObjectCommand({
+          Bucket: this.bucketName,
+          CopySource: encodeURI(copySource), // encodeURI evita erros com espaços ou caracteres especiais
+          Key: newObjectName,
+        }),
+      );
+
+      // 3. Remove o objeto antigo
+      await this.s3Client.send(
+        new DeleteObjectCommand({
+          Bucket: this.bucketName,
+          Key: oldObjectName,
+        }),
+      );
+
+      // 4. Retorna a nova URL pública
+      const endpoint = this.configService.getOrThrow<string>('MINIO_ENDPOINT');
+      const fileUrl = `${endpoint}/${this.bucketName}/${newObjectName}`;
+      
+      this.logger.log(`[MinIO] Renomeado com sucesso: de [${oldObjectName}] para [${newObjectName}]`);
+      
+      return fileUrl;
+    } catch (error) {
+      this.logger.error(`[MinIO] Erro ao renomear objeto de ${oldObjectName} para ${newObjectName}:`, error);
       throw error;
     }
   }

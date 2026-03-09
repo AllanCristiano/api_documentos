@@ -56,15 +56,6 @@ export class DocumentoController {
     return this.documentoService.aprovarDocumento(id, dadosAprovados);
   }
 
-  /**
-   * Rota Temporária: Atualiza os documentos antigos para aprovado=true.
-   * Acesse /documento/fix/legados uma vez no navegador e depois pode apagar este método.
-   */
-  @Get('fix/legados')
-  aprovarLegados() {
-    return this.documentoService.aprovarDocumentosLegados();
-  }
-
   // =========================================================================
   // 2. ROTAS ORIGINAIS (Busca, Edição, Deleção e Download)
   // =========================================================================
@@ -129,7 +120,7 @@ export class DocumentoController {
   async updateFile(
     @Param('id', ParseIntPipe) id: number,
     @Body('tempFilename') tempFilename: string,
-    @Body('originalName') originalName?: string, // <-- NOVO
+    @Body('originalName') originalName?: string,
   ) {
     if (!tempFilename) {
       throw new BadRequestException(
@@ -142,7 +133,7 @@ export class DocumentoController {
   @Put(':id')
   update(
     @Param('id', ParseIntPipe) id: number,
-    @Body() updateDocumentoDto: Partial<AprovarDocumentoDto>, // <--- AQUI
+    @Body() updateDocumentoDto: Partial<AprovarDocumentoDto>,
   ) {
     return this.documentoService.update(id, updateDocumentoDto as any);
   }
@@ -152,8 +143,20 @@ export class DocumentoController {
     return this.documentoService.remove(id);
   }
 
+  // =========================================================================
+  // 3. ROTAS DE MANUTENÇÃO (FIX)
+  // =========================================================================
+
   @Get('fix/reprocessar-tudo')
   reprocessarTodosLegados() {
     return this.documentoService.reprocessarLegadosFila();
+  }
+
+  /**
+   * Rota Definitiva: Padroniza os nomes dos arquivos no MinIO e no banco de dados.
+   */
+  @Get('fix/padronizar-todos')
+  async padronizarTodos() {
+    return await this.documentoService.padronizarTodosAprovados();
   }
 }

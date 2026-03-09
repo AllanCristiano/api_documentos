@@ -14,7 +14,7 @@ import { FilesService } from './files.service';
 import { OcrService } from './ocr.service';
 import { diskStorage } from 'multer';
 import { extname } from 'path';
-import { IsNotEmpty, IsString, IsOptional } from 'class-validator';
+import { IsNotEmpty, IsString } from 'class-validator';
 import { Response } from 'express';
 import { InjectQueue } from '@nestjs/bullmq';
 import { Queue } from 'bullmq';
@@ -135,11 +135,35 @@ export class FilesController {
     return await this.ocrService.processPdf(file, serviceDocType as any);
   }
 
+  /**
+   * 🔧 LÓGICA DE DOWNLOAD MELHORADA
+   * Aceita a URL completa do banco ou apenas a chave do MinIO e extrai o arquivo.
+   */
   @Get('download')
   async downloadFile(@Query('filename') filename: string, @Res() res: Response) {
-    const fileBuffer = await this.filesService.downloadFileFromMinio(filename);
+    if (!filename) {
+      throw new BadRequestException('O parâmetro filename é obrigatório.');
+    }
+
+    // Inteligência para extrair a chave correta, caso o frontend envie a URL completa
+    let objectKey = filename;
+    
+    // Se vier a URL inteira (ex: http://.../atos-normativos/LEI_ORDINARIA/arquivo.pdf)
+    // O regex pega tudo que vem DEPOIS de "atos-normativos/"
+    const bucketMatch = filename.match(/atos-normativos\/(.*)/);
+    if (bucketMatch && bucketMatch[1]) {
+      objectKey = bucketMatch[1];
+    }
+
+    // Busca o buffer do arquivo no MinIO usando a chave limpa
+    const fileBuffer = await this.filesService.downloadFileFromMinio(objectKey);
+    
+    // Pega apenas o nome final do arquivo para exibir no navegador (ex: LEI_ORDINARIA_6295_2025-12-31.pdf)
+    const downloadName = objectKey.split('/').pop() || 'documento.pdf';
+
     res.setHeader('Content-Type', 'application/pdf');
-    res.setHeader('Content-Disposition', `attachment; filename="${filename.split('/').pop()}"`);
+    // Adiciona aspas ao redor do nome para evitar bugs com espaços
+    res.setHeader('Content-Disposition', `attachment; filename="${downloadName}"`);
     res.send(fileBuffer);
   }
 }

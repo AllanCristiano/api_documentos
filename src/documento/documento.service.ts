@@ -100,20 +100,48 @@ export class DocumentoService {
 
   /**
    * Passo 3: O usuário revisa os dados na interface e aprova a publicação.
+   * 🔧 ATUALIZADO: Agora renomeia o arquivo no MinIO para o formato definitivo!
    */
   async aprovarDocumento(id: number, dadosAprovados: Partial<Documento>): Promise<Documento> {
     const documento = await this.findOne(id);
 
-    // Se o usuário editou o número durante a aprovação, checamos conflitos
+    // 1. Checagem de conflito
     if (dadosAprovados.number && dadosAprovados.number !== documento.number) {
-      const conflito = await this.documentoRepository.findOneBy({ number: dadosAprovados.number });
-      if (conflito) {
+      const conflito = await this.documentoRepository.findOneBy({ number: dadosAprovados.number, type: documento.type });
+      if (conflito && conflito.id !== documento.id) {
         throw new ConflictException(`Documento com número ${dadosAprovados.number} já existe.`);
       }
     }
 
+    let urlDefinitiva = documento.url;
+
+    // 2. Renomear o arquivo no MinIO (Tirar o "pendente-")
+    if (documento.url && documento.url.includes('pendente-')) {
+      try {
+        const bucketMatch = documento.url.match(/atos-normativos\/(.*)/);
+        
+        if (bucketMatch && bucketMatch[1]) {
+          const oldKey = bucketMatch[1];
+          
+          const numLimpo = dadosAprovados.number 
+            ? dadosAprovados.number.replace(/[./]/g, '-') 
+            : `sem-numero-${Date.now()}`;
+          
+          const dataDoc = dadosAprovados.date || new Date().toISOString().split('T')[0];
+
+          const newKey = `${documento.type}/${documento.type}_${numLimpo}_${dataDoc}.pdf`;
+
+          urlDefinitiva = await this.filesService.renameFileInMinio(oldKey, newKey);
+        }
+      } catch (err) {
+        console.error(`Erro não crítico ao tentar renomear o arquivo definitivo do documento ID ${id}:`, err);
+      }
+    }
+
+    // 3. Atualiza os dados no banco, marca como aprovado e salva a URL nova
     Object.assign(documento, {
       ...dadosAprovados,
+      url: urlDefinitiva,
       aprovado: true,
     });
 
@@ -123,22 +151,6 @@ export class DocumentoService {
     await this._atualizarTimestamp(docSalvo.type);
 
     return docSalvo;
-  }
-
-  /**
-   * Rota temporária para consertar os documentos antigos do banco.
-   */
-  async aprovarDocumentosLegados() {
-    // Agora ele vai pegar todos os documentos que estão pendentes ou que não foram aprovados
-    const result = await this.documentoRepository.update(
-      { aprovado: false }, // Se o documento antigo estava como false (ou o default bateu false)
-      { aprovado: true, status_ocr: StatusOcr.CONCLUIDO }
-    );
-    
-    return {
-      message: 'Documentos antigos atualizados com sucesso!',
-      linhasAfetadas: result.affected,
-    };
   }
 
   // =========================================================================
@@ -310,27 +322,25 @@ export class DocumentoService {
   }
 
   // =========================================================================
-  // ROTA DE EMERGÊNCIA: Reprocessar Legados
+  // ROTAS DE EMERGÊNCIA / MANUTENÇÃO
   // =========================================================================
+  
   async reprocessarLegadosFila() {
-    // Pega todos os documentos que não têm texto, mas que possuem uma URL válida
     const documentos = await this.documentoRepository.find({
       where: { 
         fullText: IsNull(),
-        url: Not(IsNull()) // Garante que tem arquivo para o OCR ler
+        url: Not(IsNull())
       }
     });
 
     const documentosValidos = documentos.filter(doc => doc.url.trim() !== '');
 
     for (const doc of documentosValidos) {
-      // Muda o status para PROCESSANDO (para o frontend saber que está rolando)
       await this.documentoRepository.update(doc.id, { 
         status_ocr: StatusOcr.PROCESSANDO,
         aprovado: false 
       });
 
-      // Joga na fila do BullMQ!
       await this.ocrQueue.add('processar-pdf', {
         documentoId: doc.id,
         tipo: doc.type,
@@ -342,6 +352,68 @@ export class DocumentoService {
       message: 'Reprocessamento em lote iniciado com sucesso!',
       quantidadeEnviadaParaFila: documentosValidos.length,
       dica: 'Acompanhe os logs do PM2 no servidor para ver o OCR trabalhando!'
+    };
+  }
+
+  // =========================================================================
+  // ROTA DEFINITIVA: Padronizar nomes no MinIO e URLs no Banco de Dados
+  // =========================================================================
+  async padronizarTodosAprovados() {
+    // 1. Pega TODOS os documentos aprovados na tabela
+    const documentos = await this.documentoRepository.find({
+      where: { aprovado: true }
+    });
+
+    let sucesso = 0;
+    let ignorados = 0;
+    let falha = 0;
+
+    for (const doc of documentos) {
+      try {
+        if (!doc.url) continue;
+
+        // Pega o que vem depois do nome do bucket (atos-normativos/)
+        const bucketMatch = doc.url.match(/atos-normativos\/(.*)/);
+        
+        if (bucketMatch && bucketMatch[1]) {
+          const oldKey = bucketMatch[1]; 
+          
+          // Monta as partes do nome padrão
+          const numLimpo = doc.number 
+            ? doc.number.replace(/[./]/g, '-') 
+            : `sem-numero-${doc.id}`;
+          const dataDoc = doc.date || new Date().toISOString().split('T')[0];
+
+          // Cria a chave padrão definitiva (ex: LEI_ORDINARIA/LEI_ORDINARIA_6295_2025-12-31.pdf)
+          const newKey = `${doc.type}/${doc.type}_${numLimpo}_${dataDoc}.pdf`;
+
+          // Se a URL do banco já é idêntica ao padrão novo, não faz nada
+          if (oldKey === newKey) {
+            ignorados++;
+            continue;
+          }
+
+          // 1. Muda o nome fisicamente lá no MinIO
+          const novaUrl = await this.filesService.renameFileInMinio(oldKey, newKey);
+
+          // 2. Muda na tabela do Banco de Dados
+          doc.url = novaUrl;
+          await this.documentoRepository.save(doc);
+          
+          sucesso++;
+        }
+      } catch (err) {
+        console.error(`Falha ao padronizar o documento ID ${doc.id}:`, err);
+        falha++;
+      }
+    }
+
+    return {
+      message: 'Padronização de URLs e arquivos concluída!',
+      totalAnalisados: documentos.length,
+      atualizadosNoMinioENoBanco: sucesso,
+      jaEstavamNoPadrao: ignorados,
+      falhas: falha
     };
   }
 }
