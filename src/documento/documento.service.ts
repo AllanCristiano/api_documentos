@@ -88,6 +88,25 @@ export class DocumentoService {
     return await this.documentoRepository.find({ order: { date: 'DESC' } });
   }
 
+  async findAllNoFullText(): Promise<Documento[]> {
+    return await this.documentoRepository.find({
+      select: {
+        id: true,
+        type: true,
+        url: true,
+        number: true,
+        title: true,
+        description: true,
+        date: true,
+        atualizado_em: true,
+      },
+      where: {
+        aprovado: true,
+      },
+      order: { date: 'DESC' },
+    });
+  }
+
   async findOne(id: number): Promise<Documento> {
     const documento = await this.documentoRepository.findOneBy({ id });
     if (!documento) throw new NotFoundException(`Documento ID ${id} não encontrado`);

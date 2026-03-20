@@ -64,6 +64,11 @@ export class DocumentoController {
     return this.documentoService.findAll();
   }
 
+  @Get()
+  findAllNotFullText(){
+    return this.documentoService.findAllNoFullText();
+  }
+
   @Get(':id')
   findOne(@Param('id', ParseIntPipe) id: number) {
     return this.documentoService.findOne(id);
