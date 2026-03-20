@@ -64,7 +64,7 @@ export class DocumentoController {
     return this.documentoService.findAll();
   }
 
-  @Get()
+  @Get("filtrado")
   findAllNotFullText(){
     return this.documentoService.findAllNoFullText();
   }
