@@ -112,7 +112,12 @@ export class DocumentoService {
   // =========================================================================
 
   async findAll(): Promise<Documento[]> {
-    return await this.documentoRepository.find({ order: { date: 'DESC' } });
+    return await this.documentoRepository.find({ 
+      order: { 
+        date: 'DESC',
+        number: 'DESC' // <-- Ordenação secundária adicionada
+      } 
+    });
   }
 
   // 🔴 ROTA DO SERIGY: Aplica o formatador de URL pública aqui
@@ -131,7 +136,10 @@ export class DocumentoService {
       where: {
         aprovado: true,
       },
-      order: { date: 'DESC' },
+      order: { 
+        date: 'DESC',
+        number: 'DESC' // <-- Ordenação secundária adicionada
+      },
     });
     
     return documentos.map(doc => this.formatarUrlPublica(doc));
