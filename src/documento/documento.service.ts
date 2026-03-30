@@ -120,7 +120,7 @@ export class DocumentoService {
     });
   }
 
-  // 🔴 ROTA DO SERIGY: Aplica o formatador de URL pública aqui
+  // ROTA DO SERIGY: Aplica o formatador de URL pública aqui
   async findAllNoFullText(): Promise<Documento[]> {
     const documentos = await this.documentoRepository.find({
       select: {
