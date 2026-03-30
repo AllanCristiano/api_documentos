@@ -22,6 +22,9 @@ import { CreateDocumentoDto } from './dto/create-documento.dto';
 export class DocumentoService {
   private readonly logger = new Logger(DocumentoService.name);
   private readonly pdfDirectory = join(process.cwd(), 'pdfs');
+  
+  // Base URL Pública Oficial para o Serigy
+  private readonly urlPublicaBase = 'https://transparenciastoragepub.aracaju.se.gov.br';
 
   constructor(
     @InjectRepository(Documento)
@@ -34,6 +37,30 @@ export class DocumentoService {
 
     @InjectQueue('ocr-queue') private ocrQueue: Queue,
   ) {}
+
+  // =========================================================================
+  // 0. HELPER: FORMATAR URL PÚBLICA APENAS PARA O FRONTEND
+  // =========================================================================
+  
+  /**
+   * Pega qualquer URL gerada pelo MinIO (ex: http://localhost:9000/atos-normativos/...)
+   * e força para o domínio público oficial da prefeitura.
+   * Retorna um clone do objeto para não afetar o banco de dados.
+   */
+  private formatarUrlPublica(documento: Documento): Documento {
+    if (documento && documento.url) {
+      const bucketName = '/atos-normativos';
+      const bucketIndex = documento.url.indexOf(bucketName);
+      
+      if (bucketIndex !== -1) {
+        const caminhoPdf = documento.url.substring(bucketIndex);
+        const docFormatado = { ...documento }; 
+        docFormatado.url = `${this.urlPublicaBase}${caminhoPdf}`;
+        return docFormatado as Documento;
+      }
+    }
+    return documento;
+  }
 
   // =========================================================================
   // 1. FLUXO ASSÍNCRONO (MÉTODOS EXIGIDOS PELO OCR.PROCESSOR)
@@ -88,8 +115,9 @@ export class DocumentoService {
     return await this.documentoRepository.find({ order: { date: 'DESC' } });
   }
 
+  // 🔴 ROTA DO SERIGY: Aplica o formatador de URL pública aqui
   async findAllNoFullText(): Promise<Documento[]> {
-    return await this.documentoRepository.find({
+    const documentos = await this.documentoRepository.find({
       select: {
         id: true,
         type: true,
@@ -105,6 +133,8 @@ export class DocumentoService {
       },
       order: { date: 'DESC' },
     });
+    
+    return documentos.map(doc => this.formatarUrlPublica(doc));
   }
 
   async findOne(id: number): Promise<Documento> {
