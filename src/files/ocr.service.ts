@@ -111,7 +111,7 @@ export class OcrService {
   }
 
   /**
-   * 🛡️ Higienização Cirúrgica: Remove ruídos de cabeçalhos do Diário Oficial
+   * Remove ruídos de cabeçalhos do Diário Oficial
    */
   private sanitizeText(text: string): string {
     return text

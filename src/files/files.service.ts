@@ -12,7 +12,7 @@ import * as path from 'path';
 export class FilesService {
   private readonly logger = new Logger(FilesService.name);
 
-  // 1. Injete o MinioService no construtor
+  // 1. MinioService no construtor
   constructor(private readonly minioService: MinioService) {}
 
   /**
@@ -90,13 +90,13 @@ export class FilesService {
         `Erro no processo de movimentação para o MinIO: ${tempFilename}`,
         error,
       );
-      // Não removemos o arquivo temporário em caso de erro para permitir retry manual se necessário
+      // Mantém o arquivo temporário em caso de erro para permitir retry manual se necessário
       throw error;
     }
   }
 
   /**
-   * NOVO: Renomeia (move) um arquivo no MinIO. Usado quando um documento é aprovado.
+   * Renomeia (move) um arquivo no MinIO. Usado quando um documento é aprovado.
    * @param oldKey A chave antiga (ex: 'LEI_ORDINARIA/pendente-123-arquivo.pdf')
    * @param newKey A chave nova e definitiva (ex: 'LEI_ORDINARIA/LEI_123-2024.pdf')
    */

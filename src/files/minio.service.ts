@@ -107,7 +107,7 @@ export class MinioService implements OnModuleInit {
   }
 
   // =========================================================================
-  // NOVO: Renomeia o arquivo no MinIO (Copia para o novo destino e apaga a origem)
+  // Renomeia o arquivo no MinIO (Copia para o novo destino e apaga a origem)
   // =========================================================================
   async renameFile(oldObjectName: string, newObjectName: string): Promise<string> {
     try {

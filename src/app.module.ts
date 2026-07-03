@@ -21,7 +21,6 @@ import { FilesModule } from './files/files.module';
     TypeOrmModule.forRoot({
       type: 'postgres',
       host: process.env.DB_HOST || 'localhost',
-      // Ajuste aqui: Convertendo para string antes do parseInt e garantindo fallback
       port: parseInt(String(process.env.DB_PORT || 5432)),
       username: process.env.DB_USERNAME || 'usuario',
       password: process.env.DB_PASSWORD || 'senha123',
@@ -34,7 +33,6 @@ import { FilesModule } from './files/files.module';
     BullModule.forRoot({
       connection: {
         host: process.env.REDIS_HOST || 'localhost',
-        // Ajuste aqui: Garantindo que o valor seja string para satisfazer o TS
         port: parseInt(String(process.env.REDIS_PORT || 6379)),
       },
     }),

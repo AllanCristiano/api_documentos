@@ -31,7 +31,7 @@ class FinalizeUploadDto {
 
   @IsString()
   @IsNotEmpty()
-  documentoId: string; // O ID do registro criado no banco de dados
+  documentoId: string;
 
   @IsString()
   @IsNotEmpty()
@@ -49,7 +49,7 @@ export class FilesController {
   constructor(
     private readonly filesService: FilesService,
     private readonly ocrService: OcrService,
-    @InjectQueue('ocr-queue') private readonly ocrQueue: Queue, // Injeção da fila
+    @InjectQueue('ocr-queue') private readonly ocrQueue: Queue, 
   ) {}
 
   /**
